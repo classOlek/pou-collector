@@ -1,11 +1,15 @@
 name: UPDATE collect snapshot
 
 # The COLLECT pipeline: drain the queue the create-snapshot workflow seeded.
-# Cron fires every 5 min (GitHub's minimum; fires queue behind the concurrency
-# group, so a fire that outlives the interval simply delays the next one); each
-# fire is one coordinate → worker-matrix → finalize pass over the R2 state.
-# When the newest snapshot has no uncollected characters the whole fire no-ops
-# (coordinate reports has_work=false and the workers/finalize stay cheap).
+# Each fire is one coordinate → worker-matrix → finalize pass over the R2
+# state; while the snapshot is still collecting, the fire ends by REARMING
+# ITSELF — sleeping out the coordinate gates (cooldown / penalty), then
+# dispatching the next fire. That chain, not the cron, sets the wave cadence:
+# GitHub delivers `schedule` events best-effort only (observed ~90 min for
+# this */5 cron), so the cron is just the backstop that restarts a chain
+# broken by an infra failure. When the newest snapshot has no uncollected
+# characters the whole fire no-ops and the chain ends (coordinate reports
+# has_work=false, finalize publishes, rearm sees a non-collecting phase).
 #
 #   coordinate — request-free check of the newest snapshot's manifest; reports
 #                has_work + the worker matrix. Never captures the ladder and
@@ -37,6 +41,9 @@ concurrency:
 permissions:
   contents: read
   issues: write
+  # rearm: dispatch the next fire of this workflow (workflow_dispatch via the
+  # API is exempt from GITHUB_TOKEN's recursive-trigger block by design).
+  actions: write
 
 env:
   R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
@@ -89,6 +96,9 @@ jobs:
       # silently idling the workers forever).
       has_work: ${{ steps.coordinate.outputs.has_work }}
       workers: ${{ steps.coordinate.outputs.workers }}
+      # Epoch ms a closed politeness gate reopens (empty when no gate blocked);
+      # the rearm job sleeps until then before dispatching the next fire.
+      blocked_until: ${{ steps.coordinate.outputs.blocked_until }}
     steps:
       - uses: actions/checkout@v4
 
@@ -152,6 +162,9 @@ jobs:
     if: always() && needs.coordinate.result == 'success' && needs.work.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    outputs:
+      # 'collecting' while characters remain — the rearm job's continue signal.
+      phase: ${{ steps.finalize.outputs.phase }}
     steps:
       - uses: actions/checkout@v4
 
@@ -171,7 +184,58 @@ jobs:
       # immutable publish once drained), then retention. Idempotent and safe to
       # re-run.
       - name: Finalize & publish
+        id: finalize
         run: pnpm --filter @pou/collector run finalize
+
+  # Self-rearming chain: while the snapshot is still collecting, sleep out the
+  # coordinate gates and dispatch the next fire. The sleep intentionally holds
+  # the shared concurrency group (an early dispatch would just be gate-blocked
+  # and die, ending the chain); a create-snapshot fire queued meanwhile starts
+  # right after — delayed at most one sleep, harmless against its 12 h cadence.
+  # Chain-fork safety: pending runs in the group collapse to one, and the
+  # coordinate gates no-op any fire that arrives early anyway.
+  rearm:
+    needs: [coordinate, work, finalize]
+    # Rearm even when workers were skipped (a gated fire) or some failed (their
+    # chunks stay pending) — but never off a failed coordinate/finalize, and
+    # never once the snapshot left `collecting` (published/aborted ends the
+    # chain; the create workflow starts the next one).
+    if: >-
+      always() && needs.coordinate.result == 'success' &&
+      needs.finalize.result == 'success' &&
+      needs.finalize.outputs.phase == 'collecting' &&
+      needs.work.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Sleep out the gates, then dispatch the next fire
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BLOCKED_UNTIL_MS: ${{ needs.coordinate.outputs.blocked_until }}
+          COOLDOWN_MINUTES: ${{ vars.COLLECTOR_COLLECT_COOLDOWN_MINUTES }}
+        run: |
+          set -euo pipefail
+          NOW=$(date +%s)
+          if [ -n "${BLOCKED_UNTIL_MS}" ]; then
+            # A gate blocked this fire — its exact reopen time plus a buffer.
+            TARGET=$(( BLOCKED_UNTIL_MS / 1000 + 60 ))
+          else
+            # A wave ran — wait out the cooldown (var override → config file)
+            # plus a buffer, since the gate anchors on the workers' checkpoint.
+            COOLDOWN="${COOLDOWN_MINUTES:-$(jq -r '.collectCooldownMinutes' config/collector.json)}"
+            TARGET=$(( NOW + COOLDOWN * 60 + 120 ))
+          fi
+          SLEEP=$(( TARGET - NOW ))
+          # Floor: never hot-loop, even with the cooldown disabled. Cap: stay
+          # under the job timeout — a distant gate (long penalty) just chains
+          # another gated fire, which re-sleeps toward the exact reopen time.
+          [ "$SLEEP" -lt 300 ] && SLEEP=300
+          [ "$SLEEP" -gt 2100 ] && SLEEP=2100
+          echo "rearm: sleeping ${SLEEP}s, then dispatching the next collect fire"
+          sleep "$SLEEP"
+          gh workflow run snapshot.yml --repo "${{ github.repository }}" --ref "${{ github.ref_name }}"
 
   # Failure alerting (Phase 4 #11): open or update a single pinned issue when
   # any stage of a fire failed/aborted, deduped by a stable title + label.

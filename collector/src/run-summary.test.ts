@@ -151,8 +151,13 @@ describe('renderCoordinateSummary', () => {
     });
     expect(rendered.outputs[HAS_WORK_OUTPUT_KEY]).toBe('false');
     expect(rendered.outputs['stop_reason']).toBe('penalty_active');
+    // The rearm job reads this to sleep until the gate reopens.
+    expect(rendered.outputs['blocked_until']).toBe(String(blockedUntil));
     expect(rendered.json.blockedUntil).toBe(blockedUntil);
     expect(rendered.markdown).toContain('2026-07-19T21:32:53.000Z');
+
+    const open = renderCoordinateSummary(coordinateSummary);
+    expect(open.outputs['blocked_until']).toBeUndefined();
   });
 
   it('renders the create-snapshot summary with the close result', () => {

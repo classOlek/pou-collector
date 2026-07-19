@@ -114,6 +114,11 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
       [WORKERS_OUTPUT_KEY]: JSON.stringify(summary.workers),
       phase: summary.phase,
       stop_reason: summary.stopReason,
+      // Epoch ms a closed gate reopens — the rearm job sleeps until then
+      // before dispatching the next fire (absent when no gate blocked).
+      ...(summary.blockedUntil !== undefined
+        ? { blocked_until: String(summary.blockedUntil) }
+        : {}),
     },
     json: {
       kind: 'coordinate',
