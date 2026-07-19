@@ -10,8 +10,7 @@
   "snapshotIntervalHours": 12,
   "abortCooldownHours": 6,
   "maxTransformAttempts": 3,
-  "treeVersion": "3.25",
-  "treeUrl": "https://raw.githubusercontent.com/grindinggear/skilltree-export/3.25.0/data.json",
+  "treeUrl": "https://raw.githubusercontent.com/grindinggear/skilltree-export/{version}.0/data.json",
   "retentionBudgetBytes": 9000000000,
   "keepRecentDetail": 6
 }

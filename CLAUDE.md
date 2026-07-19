@@ -15,7 +15,7 @@ to an S3-compatible object store (Cloudflare R2). Runs on free tiers
 ├── .github/workflows/   # ci, snapshot (cron pipeline), claude-diagnostics
 ├── collector/           # TypeScript: coordinate / work / finalize + transform
 ├── shared/              # data contracts (SCHEMA_VERSION, R2 key layout, schema)
-└── config/collector.json
+└── config/              # collector.json + leagues.json (league → tree version)
 ```
 
 `shared/` is the schema contract. It is a **copy** kept in sync with a separate

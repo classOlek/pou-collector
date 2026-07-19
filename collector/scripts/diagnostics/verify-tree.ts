@@ -21,7 +21,7 @@
 import { gunzipSync } from 'node:zlib';
 import type { SnapshotManifest } from '@pou/shared';
 import { checkpointPath, rawShardPrefix } from '@pou/shared';
-import { loadConfig } from '../../src/config-file.js';
+import { loadConfig, treeVersionFor } from '../../src/config-file.js';
 import { buildUserAgent } from '../../src/config.js';
 import { createFetchHttpClient } from '../../src/http/fetch-client.js';
 import { HttpTreeOrigin } from '../../src/transform/tree-origin.js';
@@ -51,17 +51,19 @@ function r2StoreFromEnv(): S3ObjectStore | undefined {
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const treeUrl = config.treeUrl.replace('{version}', encodeURIComponent(config.treeVersion));
+  const treeVersion = treeVersionFor(config.leagues, config.league);
+  const treeUrl = config.treeUrl.replace('{version}', encodeURIComponent(treeVersion));
 
   // 1. Fetch + normalize via the exact production origin the transform uses.
   console.log('=== tree source ===');
-  console.log(`treeVersion: ${config.treeVersion}`);
+  console.log(`league:      ${config.league}`);
+  console.log(`treeVersion: ${treeVersion} (config/leagues.json)`);
   console.log(`treeUrl:     ${treeUrl}`);
   const origin = new HttpTreeOrigin(createFetchHttpClient(), {
     treeUrl: config.treeUrl,
     userAgent: buildUserAgent(),
   });
-  const tree = await origin.fetch(config.treeVersion);
+  const tree = await origin.fetch(treeVersion);
   const keystones = tree.nodes.filter((n) => n.isKeystone);
   console.log(`nodes:       ${tree.nodes.length} (${keystones.length} keystones)`);
   for (const n of keystones.slice(0, 3)) {
