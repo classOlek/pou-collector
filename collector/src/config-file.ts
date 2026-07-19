@@ -2,10 +2,12 @@
  * Checked-in collector configuration (config/collector.json + config/leagues.json)
  * plus environment overrides. collector.json pins the pilot's league/depth and the
  * operational budgets; leagues.json maps each league to its passive-tree version
- * (resolved per league at transform time — see treeVersionFor). `COLLECTOR_LEAGUE`
- * / `COLLECTOR_DEPTH` let a workflow_dispatch override league and depth without
- * editing the file (Phase 2). The contact email stays in the environment only
- * (hard rule #1) and is handled separately in config.ts.
+ * (resolved per league at transform time — see treeVersionFor). Every key is
+ * overridable from the environment as COLLECTOR_<SNAKE_CASE> (see envKeyFor;
+ * the leagues map as JSON under COLLECTOR_LEAGUES) so repo Actions variables
+ * can retune the collector without a commit; blank/unset falls through to the
+ * file, a set-but-invalid value fails loudly. The contact email stays in the
+ * environment only (hard rule #1) and is handled separately in config.ts.
  *
  * The config path is resolved by walking up from this module to the workspace
  * root (pnpm-workspace.yaml), so it is found no matter the process cwd — the
@@ -56,10 +58,18 @@ const REQUIRED_NUMBERS: (keyof CollectorConfig)[] = [
   'keepRecentDetail',
 ];
 
-export interface ConfigEnv {
-  COLLECTOR_LEAGUE?: string | undefined;
-  COLLECTOR_DEPTH?: string | undefined;
-  COLLECTOR_TREE_URL?: string | undefined;
+/** String keys overridable from the environment alongside REQUIRED_NUMBERS. */
+const OVERRIDABLE_STRINGS: (keyof CollectorConfig)[] = ['league', 'treeUrl'];
+
+export type ConfigEnv = Record<string, string | undefined>;
+
+/**
+ * Env var carrying an override for a config key: COLLECTOR_ + SNAKE_CASE, e.g.
+ * workerCount → COLLECTOR_WORKER_COUNT (league/depth/treeUrl keep their
+ * historical names by construction). Blank/unset falls through to the file.
+ */
+export function envKeyFor(key: string): string {
+  return `COLLECTOR_${key.replace(/([A-Z])/g, '_$1').toUpperCase()}`;
 }
 
 /** Parse + validate the league → tree-version map (config/leagues.json). */
@@ -95,19 +105,37 @@ export function parseConfig(
   if (typeof raw !== 'object' || raw === null) {
     throw new Error('collector config must be a JSON object');
   }
-  const cfg = { ...(raw as Record<string, unknown>) } as unknown as CollectorConfig;
-  cfg.leagues = parseLeagues(leaguesRaw);
+  const record: Record<string, unknown> = { ...(raw as Record<string, unknown>) };
 
-  const leagueOverride = env.COLLECTOR_LEAGUE?.trim();
-  if (leagueOverride) cfg.league = leagueOverride;
-  const depthOverride = env.COLLECTOR_DEPTH?.trim();
-  if (depthOverride) {
-    const n = Number.parseInt(depthOverride, 10);
-    if (!Number.isFinite(n) || n <= 0) throw new Error(`invalid COLLECTOR_DEPTH: ${depthOverride}`);
-    cfg.depth = n;
+  // Every config key is overridable from the environment (the workflow feeds
+  // repo Actions variables through; precedence: dispatch input → variable →
+  // file). A set-but-invalid value is a hard error, never a silent fallback.
+  for (const key of OVERRIDABLE_STRINGS) {
+    const override = env[envKeyFor(key)]?.trim();
+    if (override) record[key] = override;
   }
-  const treeUrlOverride = env.COLLECTOR_TREE_URL?.trim();
-  if (treeUrlOverride) cfg.treeUrl = treeUrlOverride;
+  for (const key of REQUIRED_NUMBERS) {
+    const override = env[envKeyFor(key)]?.trim();
+    if (!override) continue;
+    const n = Number.parseInt(override, 10);
+    if (!Number.isFinite(n) || n <= 0) {
+      throw new Error(`invalid ${envKeyFor(key)}: ${override}`);
+    }
+    record[key] = n;
+  }
+
+  const cfg = record as unknown as CollectorConfig;
+  cfg.leagues = parseLeagues(leaguesRaw);
+  const leaguesOverride = env['COLLECTOR_LEAGUES']?.trim();
+  if (leaguesOverride) {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(leaguesOverride);
+    } catch {
+      throw new Error(`invalid COLLECTOR_LEAGUES: not valid JSON`);
+    }
+    cfg.leagues = parseLeagues(parsed);
+  }
 
   if (typeof cfg.league !== 'string' || cfg.league.trim() === '') {
     throw new Error('config.league is required');
