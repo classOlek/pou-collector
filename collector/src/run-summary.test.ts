@@ -140,6 +140,21 @@ describe('renderCoordinateSummary', () => {
     expect(JSON.parse(idle.outputs[WORKERS_OUTPUT_KEY]!)).toEqual([]);
   });
 
+  it('surfaces a skipped wave: gate reason + when the next fire can be productive', () => {
+    const blockedUntil = Date.parse('2026-07-19T21:32:53.000Z');
+    const rendered = renderCoordinateSummary({
+      ...coordinateSummary,
+      hasWork: false,
+      workers: [],
+      stopReason: 'penalty_active',
+      blockedUntil,
+    });
+    expect(rendered.outputs[HAS_WORK_OUTPUT_KEY]).toBe('false');
+    expect(rendered.outputs['stop_reason']).toBe('penalty_active');
+    expect(rendered.json.blockedUntil).toBe(blockedUntil);
+    expect(rendered.markdown).toContain('2026-07-19T21:32:53.000Z');
+  });
+
   it('renders the create-snapshot summary with the close result', () => {
     const rendered = renderCreateSummary(createSummary, seedMemory);
     expect(rendered.json.kind).toBe('create_snapshot');

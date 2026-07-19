@@ -35,6 +35,17 @@ export interface RunConfig {
    */
   earlyStopQuorum: number;
   /**
+   * Minimum gap (minutes) between the END of one work wave and the start of
+   * the next — the coordinate step skips the fan-out inside it (stop reason
+   * `cooldown`). This is the fleet's aggregate-politeness dial: with limiter
+   * pace state scoped per runner IP (fresh IP ⇒ fresh per-IP budget every
+   * wave), wave cadence — not the per-slot windows — bounds the total load on
+   * GGG, so it must be an explicit choice rather than an accident of cron
+   * frequency. Also keeps back-to-back manual dispatches from multiplying
+   * load. 0 disables.
+   */
+  collectCooldownMinutes: number;
+  /**
    * Guard for SCHEDULED create-snapshot fires: skip closing/creating when the
    * previous snapshot began (or completed) less than this many hours ago —
    * double-fire / misconfigured-cron protection. The actual snapshot cadence is

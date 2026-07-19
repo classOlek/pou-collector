@@ -38,6 +38,9 @@ export interface CreatorDeps {
   checkpointStore: CheckpointStore;
   objectStore: ObjectStore;
   limiter: RateLimiter;
+  /** This runner's public IP (discoverPublicIp) — scopes the restored pace
+   *  state via limiter.adoptIp; undefined keeps it (conservative). */
+  publicIp?: string | undefined;
   /** Finalizer for a league being closed (carries that league's tree version). */
   finalizerFor: (league: string) => Finalizer;
   /** Bypass the cadence guards (workflow_dispatch fires). */
@@ -87,6 +90,9 @@ export class SnapshotCreator {
     const runStart = this.deps.clock.now();
     const restored = await this.limiterStates.load(this.config.league, COORDINATOR_SLOT);
     if (restored) this.deps.limiter.restore(restored);
+    if (this.deps.limiter.adoptIp(this.deps.publicIp)) {
+      this.log('rate-limit: runner IP changed since the checkpoint — pace windows start fresh');
+    }
 
     const inFlight = (await this.deps.checkpointStore.listAll()).filter((m) => isInFlight(m.phase));
     const target = await this.deps.checkpointStore.load(this.config.league);

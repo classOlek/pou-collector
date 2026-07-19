@@ -24,6 +24,7 @@ const base = {
   chunkSize: 50,
   workerCount: 4,
   earlyStopQuorum: 0,
+  collectCooldownMinutes: 30,
   snapshotIntervalHours: 12,
   abortCooldownHours: 6,
   maxTransformAttempts: 3,
@@ -104,6 +105,15 @@ describe('parseConfig', () => {
       /COLLECTOR_EARLY_STOP_QUORUM/,
     );
     expect(() => parseConfig({ ...base, earlyStopQuorum: -1 }, {})).toThrow(/earlyStopQuorum/);
+  });
+
+  it('allows zero for collectCooldownMinutes (disabled) but rejects negatives', () => {
+    expect(parseConfig(base, {}).collectCooldownMinutes).toBe(30);
+    const overridden = parseConfig(base, { COLLECTOR_COLLECT_COOLDOWN_MINUTES: '0' });
+    expect(overridden.collectCooldownMinutes).toBe(0);
+    expect(() => parseConfig({ ...base, collectCooldownMinutes: -1 }, {})).toThrow(
+      /collectCooldownMinutes/,
+    );
   });
 
   it('overrides the leagues map wholesale from COLLECTOR_LEAGUES JSON', () => {

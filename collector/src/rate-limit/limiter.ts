@@ -22,7 +22,18 @@
  * timestamps) serializes to the checkpoint. `restore` rehydrates it on resume
  * and clears the per-run breaker while keeping the penalty window, the adapted
  * windows, and the recent spend — so the next cron run serves the penalty and
- * honors the long windows across the run boundary rather than forgetting them.
+ * honors the long windows rather than forgetting them.
+ *
+ * The recent spend is scoped to the IP it was recorded from (`adoptIp`): GGG
+ * enforces these windows per IP, and every GitHub-hosted runner gets a fresh
+ * one, so pace state carried across the run boundary models a server-side
+ * counter that no longer exists — it only self-throttles (the 2026-07-19
+ * hour-long "lock" that was really a saturated carried window). Penalties and
+ * streaks are deliberately NOT IP-scoped: a 429/Retry-After addresses the
+ * client we identify as via User-Agent + contact (hard rule #1), and honoring
+ * it must survive IP rotation — forgetting a Retry-After because the runner
+ * moved would be rate-limit evasion. Unknown current IP keeps the pace state
+ * (conservative, never evading).
  */
 import type { LimiterMemory, RateLimitRule } from '@pou/shared';
 import type { Clock } from './clock.js';
@@ -82,6 +93,8 @@ export class RateLimiter {
   private consecutiveErrors = 0;
   private observedRules: RateLimitRule[] = [];
   private aborted = false;
+  /** Public IP the recent spend belongs to; undefined = never discovered. */
+  private originIp: string | undefined;
 
   constructor(
     private readonly clock: Clock,
@@ -120,7 +133,25 @@ export class RateLimiter {
     // spend rather than crashing on `[...undefined]`. The first response re-seeds
     // the windows, so at worst we briefly under-count a long window on resume.
     this.recent = Array.isArray(memory.recentAcquires) ? [...memory.recentAcquires] : [];
+    this.originIp = memory.originIp;
     this.aborted = false;
+  }
+
+  /**
+   * Tell the limiter which public IP this run's requests will come from.
+   * Call after `restore`. A known IP that differs from the checkpoint's
+   * `originIp` empties the pace windows — they mirror a server-side per-IP
+   * counter that died with the old IP — and returns true so the caller can log
+   * the reset. Everything client-scoped (penalty, streaks, observed rules)
+   * stays. An unknown IP (discovery failed) changes nothing: keeping possibly-
+   * stale pace state only over-throttles, never evades.
+   */
+  adoptIp(currentIp: string | undefined): boolean {
+    if (currentIp === undefined) return false;
+    const changed = this.originIp !== undefined && this.originIp !== currentIp;
+    if (changed) this.recent = [];
+    this.originIp = currentIp;
+    return changed;
   }
 
   /**
@@ -226,6 +257,7 @@ export class RateLimiter {
       consecutiveThrottles: this.consecutiveThrottles,
       consecutiveErrors: this.consecutiveErrors,
       recentAcquires: [...this.recent],
+      ...(this.originIp !== undefined ? { originIp: this.originIp } : {}),
     };
   }
 

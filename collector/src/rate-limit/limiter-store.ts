@@ -22,6 +22,12 @@ export class LimiterStateStore {
 
   /** Load a slot's limiter memory; absent/corrupt/foreign → undefined (fresh limiter). */
   async load(league: string, slot: string): Promise<LimiterMemory | undefined> {
+    return (await this.loadState(league, slot))?.limiter;
+  }
+
+  /** Load a slot's full persisted state (limiter memory + updatedAt); same
+   *  fail-open semantics as `load` — absent/corrupt/foreign → undefined. */
+  async loadState(league: string, slot: string): Promise<WorkerState | undefined> {
     let state: WorkerState | undefined;
     try {
       state = await getJson<WorkerState>(this.store, workerStatePath(league, slot));
@@ -29,7 +35,7 @@ export class LimiterStateStore {
       return undefined;
     }
     if (!state || state.schemaVersion !== SCHEMA_VERSION) return undefined;
-    return state.limiter;
+    return state;
   }
 
   async save(league: string, slot: string, limiter: LimiterMemory, nowIso: string): Promise<void> {

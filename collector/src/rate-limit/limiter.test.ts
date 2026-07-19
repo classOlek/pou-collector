@@ -225,6 +225,68 @@ describe('RateLimiter persistence and resume', () => {
     expect(clock.now() - before).toBe(30_000); // the penalty persisted across the resume
   });
 
+  it('starts the pace windows fresh on a new IP but keeps every client-scoped signal', async () => {
+    const clock = new FakeClock(0);
+    const first = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    first.adoptIp('203.0.113.7');
+    for (let i = 0; i < 40; i += 1) {
+      first.observe(obs('ok', CHAR_HEADERS));
+      await first.acquire();
+    }
+    first.observe(obs('throttled', { ...CHAR_HEADERS, 'retry-after': '600' }));
+    const memory = first.toMemory();
+    expect(memory.originIp).toBe('203.0.113.7');
+    expect(memory.recentAcquires.length).toBeGreaterThan(0);
+
+    // Same IP (a resume on the same runner/NAT): the spend still counts.
+    const sameIp = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    sameIp.restore(memory);
+    expect(sameIp.adoptIp('203.0.113.7')).toBe(false);
+    expect(sameIp.toMemory().recentAcquires).toEqual(memory.recentAcquires);
+
+    // New IP (a fresh runner): the per-IP windows died with the old IP…
+    const newIp = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    newIp.restore(memory);
+    expect(newIp.adoptIp('198.51.100.9')).toBe(true);
+    const adopted = newIp.toMemory();
+    expect(adopted.recentAcquires).toEqual([]);
+    expect(adopted.originIp).toBe('198.51.100.9');
+    // …but the client-scoped Retry-After penalty and streak survive: skipping
+    // them because the runner moved would be rate-limit evasion.
+    expect(adopted.penaltyUntil).toBe(memory.penaltyUntil);
+    expect(adopted.consecutiveThrottles).toBe(memory.consecutiveThrottles);
+    expect(newIp.nextAcquireAt()).toBe(memory.penaltyUntil);
+  });
+
+  it('keeps the pace state when the current IP is unknown (conservative, never evading)', () => {
+    const clock = new FakeClock(0);
+    const first = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    first.adoptIp('203.0.113.7');
+    const memory = { ...first.toMemory(), recentAcquires: [clock.now()] };
+
+    const resumed = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    resumed.restore(memory);
+    expect(resumed.adoptIp(undefined)).toBe(false); // discovery failed → keep everything
+    expect(resumed.toMemory().recentAcquires).toEqual(memory.recentAcquires);
+    expect(resumed.toMemory().originIp).toBe('203.0.113.7');
+  });
+
+  it('adopts the first discovered IP without resetting a checkpoint that never had one', () => {
+    const clock = new FakeClock(0);
+    const limiter = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    limiter.restore({
+      observedRules: [],
+      penaltyUntil: 0,
+      consecutiveThrottles: 0,
+      consecutiveErrors: 0,
+      recentAcquires: [clock.now()],
+    });
+    // Pre-originIp checkpoint: unknown provenance → keep the spend, tag it now.
+    expect(limiter.adoptIp('203.0.113.7')).toBe(false);
+    expect(limiter.toMemory().recentAcquires).toHaveLength(1);
+    expect(limiter.toMemory().originIp).toBe('203.0.113.7');
+  });
+
   it('clears the per-run abort breaker on resume but re-aborts if trouble persists', () => {
     const clock = new FakeClock(0);
     const cfg = { ...DEFAULT_LIMITER_CONFIG, throttleAbortThreshold: 3 };

@@ -155,6 +155,75 @@ describe('Worker chunk processing', () => {
     expect(next.requests).toBeGreaterThan(0);
   });
 
+  it("collects immediately on a new runner IP instead of stalling on the old IP's spend", async () => {
+    // The 2026-07-19 incident, second act: the checkpointed saturated window
+    // belonged to the PREVIOUS runner's IP. On a fresh runner (fresh per-IP
+    // budget server-side) the carried spend must not self-throttle the run.
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({ entries, config: { chunkSize: 10, workerCount: 1 } });
+    await h.createFire();
+
+    const saturatedAt = h.clock.now() - 1_000;
+    await new LimiterStateStore(h.objectStore).save(
+      LEAGUE,
+      workerSlot(0),
+      {
+        observedRules: [
+          {
+            name: 'Ip',
+            limits: [
+              { hits: 30, periodSec: 60, penaltySec: 120 },
+              { hits: 90, periodSec: 1800, penaltySec: 600 },
+            ],
+            state: [],
+          },
+        ],
+        penaltyUntil: 0,
+        consecutiveThrottles: 0,
+        consecutiveErrors: 0,
+        recentAcquires: Array.from({ length: 81 }, () => saturatedAt),
+        originIp: '203.0.113.7',
+      },
+      new Date(h.clock.now()).toISOString(),
+    );
+
+    const summary = await h.newWorker(0, h.api.client, 'run-0', '198.51.100.9').runOnce();
+    expect(summary.stopReason).toBe('assigned_drained');
+    expect(summary.requests).toBeGreaterThan(0);
+    expect(h.logs.some((l) => l.includes('pace windows start fresh'))).toBe(true);
+
+    // The saved state now belongs to the new IP.
+    const saved = await new LimiterStateStore(h.objectStore).load(LEAGUE, workerSlot(0));
+    expect(saved?.originIp).toBe('198.51.100.9');
+  });
+
+  it('keeps serving a client penalty across an IP change (no Retry-After evasion)', async () => {
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({ entries, config: { chunkSize: 10, workerCount: 1 } });
+    await h.createFire();
+
+    // A 429's Retry-After parked this slot far past maxWaitMillis (300s).
+    await new LimiterStateStore(h.objectStore).save(
+      LEAGUE,
+      workerSlot(0),
+      {
+        observedRules: [],
+        penaltyUntil: h.clock.now() + 3_600_000,
+        consecutiveThrottles: 1,
+        consecutiveErrors: 0,
+        recentAcquires: [],
+        originIp: '203.0.113.7',
+      },
+      new Date(h.clock.now()).toISOString(),
+    );
+
+    const start = h.clock.now();
+    const summary = await h.newWorker(0, h.api.client, 'run-0', '198.51.100.9').runOnce();
+    expect(summary.stopReason).toBe('rate_limit_stall'); // new IP did NOT clear the penalty
+    expect(summary.requests).toBe(0);
+    expect(h.clock.now()).toBe(start);
+  });
+
   it('defers instead of sleeping past the run budget deadline', async () => {
     // When the next slot fits under maxWaitMillis but falls beyond the run
     // budget, sleeping can produce no more work — stop without the sleep.

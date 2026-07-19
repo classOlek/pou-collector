@@ -179,8 +179,21 @@ export interface LimiterMemory {
    * window limiter counts these per observed window; persisting them lets a
    * resumed run honor GGG's long windows (e.g. 180 requests / 2 h) across the
    * cron-run boundary instead of forgetting its recent spend each run.
+   *
+   * Scoped to `originIp`: the windows mirror a server-side per-IP counter, so
+   * a resume on a different runner IP starts them empty (see RateLimiter
+   * .adoptIp). `penaltyUntil` and the streaks are NOT scoped — a 429 /
+   * Retry-After addresses the client (our User-Agent + contact), and honoring
+   * it must survive the IP rotating between runs.
    */
   recentAcquires: number[];
+  /**
+   * Public IP the recentAcquires were recorded from, when discovery succeeded.
+   * Absent on older checkpoints or when discovery failed — treated as "unknown,
+   * keep the pace state" (conservative). Optional field on private state; no
+   * schema bump (same precedent as recentAcquires).
+   */
+  originIp?: string;
 }
 
 /**

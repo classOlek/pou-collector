@@ -82,7 +82,7 @@ export function renderObservedLimits(memory: LimiterMemory): string {
 }
 
 export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSummary {
-  const markdown = [
+  const blocks = [
     '## Coordinate run',
     '',
     table(
@@ -99,10 +99,16 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
         ],
       ],
     ),
-  ].join('\n');
+  ];
+  if (summary.blockedUntil !== undefined) {
+    // Answer "why is nothing collecting?" from the run page: which politeness
+    // gate skipped the wave and when the next fire can be productive.
+    const until = new Date(summary.blockedUntil).toISOString();
+    blocks.push('', `_Wave skipped (${summary.stopReason}); next eligible fire after ${until}._`);
+  }
 
   return {
-    markdown,
+    markdown: blocks.join('\n'),
     outputs: {
       [HAS_WORK_OUTPUT_KEY]: summary.hasWork ? HAS_WORK_TRUE : 'false',
       [WORKERS_OUTPUT_KEY]: JSON.stringify(summary.workers),
@@ -118,6 +124,7 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
       pendingCount: summary.pendingCount,
       totalCharacters: summary.totalCharacters,
       chunkCount: summary.chunkCount,
+      ...(summary.blockedUntil !== undefined ? { blockedUntil: summary.blockedUntil } : {}),
     },
   };
 }

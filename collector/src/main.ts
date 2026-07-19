@@ -37,6 +37,7 @@ import { CheckpointStore } from './checkpoint/store.js';
 import { S3ObjectStore } from './checkpoint/s3-store.js';
 import type { ObjectStore } from './checkpoint/object-store.js';
 import { createFetchHttpClient } from './http/fetch-client.js';
+import { discoverPublicIp } from './http/public-ip.js';
 import { LegacyCharacterSource, LegacyLadderSource } from './sources/legacy.js';
 import { Coordinator } from './run/coordinator.js';
 import { SnapshotCreator } from './run/create-snapshot.js';
@@ -118,6 +119,7 @@ async function createSnapshot(config: CollectorConfig, store: ObjectStore): Prom
     checkpointStore,
     objectStore: store,
     limiter,
+    publicIp: await discoverPublicIp(),
     finalizerFor: makeFinalizerFactory(config, store, checkpointStore),
     // Dispatch fires bypass the cadence guards; scheduled fires respect them.
     force: process.env['COLLECTOR_FORCE_CREATE'] === 'true',
@@ -133,9 +135,16 @@ async function coordinate(config: CollectorConfig, store: ObjectStore): Promise<
   const checkpointStore = new CheckpointStore(store);
   const league = await selectCollectLeague(checkpointStore, config.league);
   const coordinator = new Coordinator(
-    { league, workerCount: config.workerCount },
+    {
+      league,
+      workerCount: config.workerCount,
+      maxWaitMillis: config.maxWaitMillis,
+      collectCooldownMillis: config.collectCooldownMinutes * 60_000,
+    },
     {
       checkpointStore,
+      objectStore: store,
+      clock: systemClock,
       log: (message) => console.log(`[coordinate] ${message}`),
     },
   );
@@ -155,6 +164,10 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
     throw new Error(`WORKER_INDEX must be in [0, ${config.workerCount}): got ${workerIndex}`);
   }
   const limiter = new RateLimiter(systemClock, DEFAULT_LIMITER_CONFIG);
+  // Scope the restored pace state to this runner's IP: GGG enforces the
+  // windows per IP and every hosted runner gets a fresh one, so a stale spend
+  // must not self-throttle this run (penalties still carry — see adoptIp).
+  const publicIp = await discoverPublicIp();
   const worker = new Worker(
     {
       league,
@@ -175,6 +188,7 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
       checkpointStore,
       objectStore: store,
       limiter,
+      publicIp,
       log: (message) => console.log(`[work w${workerIndex}] ${message}`),
     },
   );

@@ -12,7 +12,10 @@
  *     (shard before chunk: a crash in between leaves an orphan shard that
  *     finalize/next-visit cleanup removes — never lost outcomes);
  *  4. persists its own limiter memory under its slot (each runner has its own
- *     IP, so rate-limit adaptation is per slot).
+ *     IP, so rate-limit adaptation is per slot). The pace state inside it is
+ *     additionally scoped to the runner's public IP (deps.publicIp →
+ *     limiter.adoptIp): a new IP starts the per-IP windows fresh, while
+ *     penalties/streaks — client-scoped signals — always carry across runs.
  *
  * A worker never writes the manifest, the roster, another slot's state or
  * another worker's chunks — every object keeps exactly one writer.
@@ -69,6 +72,12 @@ export interface WorkerDeps {
   checkpointStore: CheckpointStore;
   objectStore: ObjectStore;
   limiter: RateLimiter;
+  /**
+   * This runner's public IP (discoverPublicIp), scoping the restored pace
+   * state via limiter.adoptIp. undefined = discovery failed/skipped — the
+   * limiter then keeps the checkpointed pace state (conservative).
+   */
+  publicIp?: string | undefined;
   log?: (message: string) => void;
 }
 
@@ -145,6 +154,11 @@ export class Worker {
 
     const restored = await this.limiterStates.load(this.config.league, slot);
     if (restored) this.deps.limiter.restore(restored);
+    if (this.deps.limiter.adoptIp(this.deps.publicIp)) {
+      this.log(
+        'rate-limit: runner IP changed since the checkpoint — pace windows start fresh, penalties kept',
+      );
+    }
 
     const all = await this.chunks.loadAll(
       manifest.league,

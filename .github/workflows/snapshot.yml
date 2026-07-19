@@ -69,6 +69,10 @@ env:
   # Early stop: once this many workers drained their whole assignment, the
   # rest checkpoint and stop (their chunks resume next fire). 0/unset = off.
   COLLECTOR_EARLY_STOP_QUORUM: ${{ vars.COLLECTOR_EARLY_STOP_QUORUM }}
+  # Minimum gap between work waves (the fleet's aggregate-politeness dial —
+  # with pace state scoped per runner IP, wave cadence bounds total load on
+  # GGG). Coordinate skips the fan-out inside it. 0 disables.
+  COLLECTOR_COLLECT_COOLDOWN_MINUTES: ${{ vars.COLLECTOR_COLLECT_COOLDOWN_MINUTES }}
   COLLECTOR_SNAPSHOT_INTERVAL_HOURS: ${{ vars.COLLECTOR_SNAPSHOT_INTERVAL_HOURS }}
   COLLECTOR_ABORT_COOLDOWN_HOURS: ${{ vars.COLLECTOR_ABORT_COOLDOWN_HOURS }}
   COLLECTOR_MAX_TRANSFORM_ATTEMPTS: ${{ vars.COLLECTOR_MAX_TRANSFORM_ATTEMPTS }}

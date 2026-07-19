@@ -61,7 +61,7 @@ const REQUIRED_NUMBERS: (keyof CollectorConfig)[] = [
 
 /** Numeric keys where ZERO is meaningful (0 = feature disabled), unlike
  *  REQUIRED_NUMBERS which must be strictly positive. */
-const ZERO_OK_NUMBERS: (keyof CollectorConfig)[] = ['earlyStopQuorum'];
+const ZERO_OK_NUMBERS: (keyof CollectorConfig)[] = ['earlyStopQuorum', 'collectCooldownMinutes'];
 
 /** String keys overridable from the environment alongside REQUIRED_NUMBERS. */
 const OVERRIDABLE_STRINGS: (keyof CollectorConfig)[] = ['league', 'treeUrl'];

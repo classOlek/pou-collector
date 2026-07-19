@@ -61,6 +61,9 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     chunkSize: 5,
     workerCount: 2,
     earlyStopQuorum: 0,
+    // Disabled by default so suites drive waves back-to-back; the coordinator
+    // gate tests opt in explicitly.
+    collectCooldownMinutes: 0,
     snapshotIntervalHours: 12,
     abortCooldownHours: 6,
     ...opts.config,
@@ -75,9 +78,16 @@ export function makeRunHarness(opts: RunHarnessOptions) {
 
   const newCoordinator = (): Coordinator =>
     new Coordinator(
-      { league: config.league, workerCount: config.workerCount },
+      {
+        league: config.league,
+        workerCount: config.workerCount,
+        maxWaitMillis: config.maxWaitMillis,
+        collectCooldownMillis: config.collectCooldownMinutes * 60_000,
+      },
       {
         checkpointStore,
+        objectStore,
+        clock,
         log,
       },
     );
@@ -128,6 +138,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     workerIndex: number,
     client: HttpClient = api.client,
     runId = 'run-0',
+    publicIp?: string,
   ): Worker =>
     new Worker(
       {
@@ -148,6 +159,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
         checkpointStore,
         objectStore,
         limiter: newLimiter(),
+        ...(publicIp !== undefined ? { publicIp } : {}),
         log,
       },
     );
