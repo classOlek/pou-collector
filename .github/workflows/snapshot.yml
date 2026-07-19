@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       league:
-        description: 'Override the collected league (else config/collector.json)'
+        description: 'Override the collected league (else COLLECTOR_LEAGUE repo variable, else config/collector.json)'
         required: false
         type: string
       depth:
@@ -57,9 +57,13 @@ env:
   # Hard rule #1: identifiable User-Agent with a contact address. The
   # collector throws without it (intended) — a misconfigured run fails loudly.
   COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
-  # Optional dispatch overrides (blank on schedule → config file wins).
-  COLLECTOR_LEAGUE: ${{ inputs.league }}
-  COLLECTOR_DEPTH: ${{ inputs.depth }}
+  # Optional overrides, in precedence order: dispatch input → repository
+  # Actions variable → config/collector.json (blank falls through to the next).
+  # Variables live in Settings → Secrets and variables → Actions → Variables;
+  # they hold no credentials, so plaintext variables (not secrets) are fine.
+  COLLECTOR_LEAGUE: ${{ inputs.league || vars.COLLECTOR_LEAGUE }}
+  COLLECTOR_DEPTH: ${{ inputs.depth || vars.COLLECTOR_DEPTH }}
+  COLLECTOR_TREE_URL: ${{ vars.COLLECTOR_TREE_URL }}
 
 jobs:
   coordinate:
