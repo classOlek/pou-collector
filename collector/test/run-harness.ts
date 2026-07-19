@@ -212,7 +212,12 @@ export function makeRunHarness(opts: RunHarnessOptions) {
 
 export type RunHarness = ReturnType<typeof makeRunHarness>;
 
-/** The collect workflow's cron cadence (snapshot.yml fires every 30 min). */
+/**
+ * Inter-fire gap the resume tests advance the clock by. Deliberately NOT the
+ * live cron cadence (snapshot.yml fires every 5 min): 30 min is one full GGG
+ * long-window period, so a saturated 90-req/30-min window is guaranteed
+ * drained and the next fire's worker collects instead of stalling again.
+ */
 export const COLLECT_CRON_GAP_MS = 30 * 60_000;
 
 /**

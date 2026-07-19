@@ -7,7 +7,7 @@
  *    (belt-and-suspenders; the orchestrator already aborts this at drain time).
  *  - Each failed transform advances `transformAttempts`; after the configured
  *    ceiling the snapshot aborts (raw deleted, cooldown applies) instead of the
- *    cron retrying the same failure every 30 min.
+ *    cron retrying the same failure on every fire.
  *  - Below the ceiling the failure is surfaced (the workflow alerts) with the
  *    phase left `transforming` so the next run retries.
  */

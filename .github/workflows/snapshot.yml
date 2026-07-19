@@ -1,9 +1,11 @@
 name: Snapshot collector
 
 # The COLLECT pipeline: drain the queue the create-snapshot workflow seeded.
-# Cron fires every 30 min; each fire is one coordinate → worker-matrix →
-# finalize pass over the R2 state. When the newest snapshot has no uncollected
-# characters the whole fire no-ops (coordinate reports has_work=false).
+# Cron fires every 5 min (GitHub's minimum; fires queue behind the concurrency
+# group, so a fire that outlives the interval simply delays the next one); each
+# fire is one coordinate → worker-matrix → finalize pass over the R2 state.
+# When the newest snapshot has no uncollected characters the whole fire no-ops
+# (coordinate reports has_work=false and the workers/finalize stay cheap).
 #
 #   coordinate — request-free check of the newest snapshot's manifest; reports
 #                has_work + the worker matrix. Never captures the ladder and
@@ -22,7 +24,7 @@ name: Snapshot collector
 # never overlap workers, and the R2 state needs no locking.
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch: {}
 
 # Single pipeline: never let two fires overlap. cancel-in-progress is false so
