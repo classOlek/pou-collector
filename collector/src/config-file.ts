@@ -59,6 +59,10 @@ const REQUIRED_NUMBERS: (keyof CollectorConfig)[] = [
   'keepRecentDetail',
 ];
 
+/** Numeric keys where ZERO is meaningful (0 = feature disabled), unlike
+ *  REQUIRED_NUMBERS which must be strictly positive. */
+const ZERO_OK_NUMBERS: (keyof CollectorConfig)[] = ['earlyStopQuorum'];
+
 /** String keys overridable from the environment alongside REQUIRED_NUMBERS. */
 const OVERRIDABLE_STRINGS: (keyof CollectorConfig)[] = ['league', 'treeUrl'];
 
@@ -115,11 +119,12 @@ export function parseConfig(
     const override = env[envKeyFor(key)]?.trim();
     if (override) record[key] = override;
   }
-  for (const key of REQUIRED_NUMBERS) {
+  for (const key of [...REQUIRED_NUMBERS, ...ZERO_OK_NUMBERS]) {
     const override = env[envKeyFor(key)]?.trim();
     if (!override) continue;
     const n = Number.parseInt(override, 10);
-    if (!Number.isFinite(n) || n <= 0) {
+    const min = ZERO_OK_NUMBERS.includes(key) ? 0 : 1;
+    if (!Number.isFinite(n) || n < min) {
       throw new Error(`invalid ${envKeyFor(key)}: ${override}`);
     }
     record[key] = n;
@@ -148,6 +153,12 @@ export function parseConfig(
     const value = cfg[key];
     if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
       throw new Error(`config.${String(key)} must be a positive number`);
+    }
+  }
+  for (const key of ZERO_OK_NUMBERS) {
+    const value = cfg[key];
+    if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
+      throw new Error(`config.${String(key)} must be a non-negative number`);
     }
   }
   return cfg;

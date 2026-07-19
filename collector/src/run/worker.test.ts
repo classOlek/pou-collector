@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { rawChunkShardPrefix } from '@pou/shared';
-import { ChunkStore, assignedChunkIndices } from '../chunks/chunk-store.js';
+import { getJson, putJson } from '../checkpoint/object-store.js';
+import { ChunkStore, assignedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
 import { LimiterStateStore, workerSlot } from '../rate-limit/limiter-store.js';
+import type { HttpClient } from '../sources/types.js';
+import { workerDonePath, type WorkerDoneMarker } from './worker-quorum.js';
 import { COLLECT_CRON_GAP_MS, LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';
 import { readAllShards, tallyOutcomes } from '../../test/helpers.js';
@@ -203,6 +206,105 @@ describe('Worker chunk processing', () => {
     const gone = byKey.get('acct-gone/char-gone');
     expect(gone?.outcome).toBe('dead');
     expect(gone?.attempts).toBe(3);
+  });
+
+  it('stays inert with the quorum disabled or without a fire runId', async () => {
+    const h = makeRunHarness({
+      entries: buildLadder(10),
+      config: { chunkSize: 5, workerCount: 2 },
+    });
+    await h.createFire();
+
+    // earlyStopQuorum defaults to 0: a drained worker writes no done marker.
+    const disabled = await h.newWorker(0).runOnce();
+    expect(disabled.stopReason).toBe('assigned_drained');
+    expect(await getJson(h.objectStore, workerDonePath(LEAGUE, 0))).toBeUndefined();
+
+    // Quorum set but no runId (local run outside Actions): equally inert.
+    const h2 = makeRunHarness({
+      entries: buildLadder(10),
+      config: { chunkSize: 5, workerCount: 2, earlyStopQuorum: 1 },
+    });
+    await h2.createFire();
+    const noRunId = await h2.newWorker(1, h2.api.client, '').runOnce();
+    expect(noRunId.stopReason).toBe('assigned_drained');
+    expect(await getJson(h2.objectStore, workerDonePath(LEAGUE, 1))).toBeUndefined();
+  });
+
+  it('stops a straggler once the quorum of siblings drained, resuming its chunks next fire', async () => {
+    const h = makeRunHarness({
+      entries: buildLadder(20),
+      config: { chunkSize: 5, workerCount: 2, earlyStopQuorum: 1 },
+    });
+    await h.createFire();
+
+    // w0 drains its whole assignment and publishes a done marker for the fire.
+    const w0 = await h.newWorker(0, h.api.client, 'run-A').runOnce();
+    expect(w0.stopReason).toBe('assigned_drained');
+    const marker = await getJson<WorkerDoneMarker>(h.objectStore, workerDonePath(LEAGUE, 0));
+    expect(marker).toMatchObject({ slot: 'w0', runId: 'run-A' });
+
+    // w1 (same fire) sees the quorum met before its first fetch and stops —
+    // without marking ITSELF done and without touching its chunks.
+    const w1 = await h.newWorker(1, h.api.client, 'run-A').runOnce();
+    expect(w1.stopReason).toBe('quorum_stopped');
+    expect(w1.requests).toBe(0);
+    expect(await getJson(h.objectStore, workerDonePath(LEAGUE, 1))).toBeUndefined();
+    const store = new ChunkStore(h.objectStore);
+    expect(pendingChunkIndices(await store.loadAll(LEAGUE, 'snap-fixed', 4))).toEqual([1, 3]);
+
+    // Next fire (new runId): w0's stale run-A marker no longer counts, so w1
+    // drains its leftover chunks normally — early stop lost no work.
+    h.clock.advance(COLLECT_CRON_GAP_MS);
+    const w1Next = await h.newWorker(1, h.api.client, 'run-B').runOnce();
+    expect(w1Next.stopReason).toBe('assigned_drained');
+    expect(pendingChunkIndices(await store.loadAll(LEAGUE, 'snap-fixed', 4))).toEqual([]);
+    expect(h.api.itemCalls.get('acct-6/char-6')).toBe(1); // fetched exactly once
+  });
+
+  it('checkpoints partial progress durably when the quorum lands mid-chunk', async () => {
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({
+      entries,
+      config: { chunkSize: 10, workerCount: 2, earlyStopQuorum: 1 },
+    });
+    await h.createFire();
+
+    // w1's done marker appears while w0 is mid-chunk (as it would when a
+    // sibling matrix job finishes first): after the 5th API call, w1 is done.
+    let calls = 0;
+    const client: HttpClient = async (req) => {
+      calls += 1;
+      if (calls === 5) {
+        const marker: WorkerDoneMarker = {
+          slot: workerSlot(1),
+          runId: 'run-A',
+          finishedAt: new Date(h.clock.now()).toISOString(),
+        };
+        await putJson(h.objectStore, workerDonePath(LEAGUE, 1), marker);
+      }
+      return h.api.client(req);
+    };
+
+    const w0 = await h.newWorker(0, client, 'run-A').runOnce();
+    expect(w0.stopReason).toBe('quorum_stopped');
+    expect(w0.requests).toBeGreaterThan(0);
+
+    // The partial visit checkpointed: resolved outcomes durable in the chunk,
+    // their records in exactly one shard, the rest still workable.
+    const chunk = await new ChunkStore(h.objectStore).load(LEAGUE, 'snap-fixed', 0);
+    const resolved = chunk.characters.filter((c) => c.outcome === 'ok');
+    expect(resolved.length).toBeGreaterThan(0);
+    expect(resolved.length).toBeLessThan(10);
+    expect((await readAllShards(h.objectStore)).length).toBe(resolved.length);
+
+    // The next fire finishes the chunk without re-fetching what was resolved.
+    h.clock.advance(COLLECT_CRON_GAP_MS);
+    const next = await h.newWorker(0, h.api.client, 'run-B').runOnce();
+    expect(next.stopReason).toBe('assigned_drained');
+    for (const c of resolved) {
+      expect(h.api.itemCalls.get(`${c.account}/${c.character}`)).toBe(1);
+    }
   });
 
   it('does nothing when no snapshot is collecting', async () => {

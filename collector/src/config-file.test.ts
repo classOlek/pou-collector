@@ -23,6 +23,7 @@ const base = {
   maxAttempts: 3,
   chunkSize: 50,
   workerCount: 4,
+  earlyStopQuorum: 0,
   snapshotIntervalHours: 12,
   abortCooldownHours: 6,
   maxTransformAttempts: 3,
@@ -93,6 +94,16 @@ describe('parseConfig', () => {
       /COLLECTOR_WORKER_COUNT/,
     );
     expect(() => parseConfig(base, { COLLECTOR_CHUNK_SIZE: '-5' })).toThrow(/COLLECTOR_CHUNK_SIZE/);
+  });
+
+  it('allows zero for earlyStopQuorum (disabled) but rejects negatives', () => {
+    expect(parseConfig(base, {}).earlyStopQuorum).toBe(0);
+    expect(parseConfig(base, { COLLECTOR_EARLY_STOP_QUORUM: '13' }).earlyStopQuorum).toBe(13);
+    expect(parseConfig(base, { COLLECTOR_EARLY_STOP_QUORUM: '0' }).earlyStopQuorum).toBe(0);
+    expect(() => parseConfig(base, { COLLECTOR_EARLY_STOP_QUORUM: '-1' })).toThrow(
+      /COLLECTOR_EARLY_STOP_QUORUM/,
+    );
+    expect(() => parseConfig({ ...base, earlyStopQuorum: -1 }, {})).toThrow(/earlyStopQuorum/);
   });
 
   it('overrides the leagues map wholesale from COLLECTOR_LEAGUES JSON', () => {
