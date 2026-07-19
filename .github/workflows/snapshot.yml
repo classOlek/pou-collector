@@ -25,7 +25,7 @@ on:
   workflow_dispatch:
     inputs:
       league:
-        description: 'Override the collected league (else config/collector.json)'
+        description: 'Override the collected league (else COLLECTOR_LEAGUE repo variable, else config/collector.json)'
         required: false
         type: string
       depth:
@@ -57,9 +57,29 @@ env:
   # Hard rule #1: identifiable User-Agent with a contact address. The
   # collector throws without it (intended) — a misconfigured run fails loudly.
   COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
-  # Optional dispatch overrides (blank on schedule → config file wins).
-  COLLECTOR_LEAGUE: ${{ inputs.league }}
-  COLLECTOR_DEPTH: ${{ inputs.depth }}
+  # Optional overrides, in precedence order: dispatch input → repository
+  # Actions variable → config file (blank falls through to the next). Every
+  # config key is overridable as COLLECTOR_<SNAKE_CASE> (config-file.ts
+  # envKeyFor); COLLECTOR_LEAGUES is the league → tree-version map as JSON.
+  # Variables live in Settings → Secrets and variables → Actions → Variables;
+  # they hold no credentials, so plaintext variables (not secrets) are fine.
+  # The vars context is snapshotted when the run starts, so the coordinator
+  # and every worker of one fire always agree (chunk ownership stays disjoint).
+  COLLECTOR_LEAGUE: ${{ inputs.league || vars.COLLECTOR_LEAGUE }}
+  COLLECTOR_DEPTH: ${{ inputs.depth || vars.COLLECTOR_DEPTH }}
+  COLLECTOR_TREE_URL: ${{ vars.COLLECTOR_TREE_URL }}
+  COLLECTOR_LEAGUES: ${{ vars.COLLECTOR_LEAGUES }}
+  COLLECTOR_LADDER_PAGE_SIZE: ${{ vars.COLLECTOR_LADDER_PAGE_SIZE }}
+  COLLECTOR_MAX_RUN_MILLIS: ${{ vars.COLLECTOR_MAX_RUN_MILLIS }}
+  COLLECTOR_MAX_AGE_HOURS: ${{ vars.COLLECTOR_MAX_AGE_HOURS }}
+  COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
+  COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
+  COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
+  COLLECTOR_SNAPSHOT_INTERVAL_HOURS: ${{ vars.COLLECTOR_SNAPSHOT_INTERVAL_HOURS }}
+  COLLECTOR_ABORT_COOLDOWN_HOURS: ${{ vars.COLLECTOR_ABORT_COOLDOWN_HOURS }}
+  COLLECTOR_MAX_TRANSFORM_ATTEMPTS: ${{ vars.COLLECTOR_MAX_TRANSFORM_ATTEMPTS }}
+  COLLECTOR_RETENTION_BUDGET_BYTES: ${{ vars.COLLECTOR_RETENTION_BUDGET_BYTES }}
+  COLLECTOR_KEEP_RECENT_DETAIL: ${{ vars.COLLECTOR_KEEP_RECENT_DETAIL }}
 
 jobs:
   coordinate:

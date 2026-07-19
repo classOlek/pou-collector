@@ -24,7 +24,7 @@
  * misconfigured workflow fails loudly instead of shipping an anonymous UA.
  */
 import { buildUserAgent } from './config.js';
-import { loadConfig, type CollectorConfig } from './config-file.js';
+import { loadConfig, treeVersionFor, type CollectorConfig } from './config-file.js';
 import { selectCollectLeague } from './select-league.js';
 import { systemClock } from './rate-limit/clock.js';
 import { DEFAULT_LIMITER_CONFIG, RateLimiter } from './rate-limit/limiter.js';
@@ -142,7 +142,9 @@ async function finalize(config: CollectorConfig, store: ObjectStore): Promise<nu
     {
       league,
       maxAgeHours: config.maxAgeHours,
-      treeVersion: config.treeVersion,
+      // Resolved for the league actually being finalized (which may be an
+      // in-flight league, not config.league); unmapped league → loud failure.
+      treeVersion: treeVersionFor(config.leagues, league),
       maxTransformAttempts: config.maxTransformAttempts,
     },
     {
