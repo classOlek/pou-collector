@@ -47,6 +47,7 @@ const REQUIRED_NUMBERS: (keyof CollectorConfig)[] = [
   'depth',
   'ladderPageSize',
   'maxRunMillis',
+  'maxWaitMillis',
   'maxAgeHours',
   'maxAttempts',
   'chunkSize',

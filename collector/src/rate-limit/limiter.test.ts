@@ -83,6 +83,25 @@ describe('RateLimiter pacing', () => {
   });
 });
 
+describe('RateLimiter nextAcquireAt', () => {
+  it('peeks the next slot without sleeping or recording', async () => {
+    const clock = new FakeClock(0);
+    const limiter = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG); // seed: 4 requests / 8s
+    expect(limiter.nextAcquireAt()).toBe(0); // a free slot reads as "now"
+    for (let i = 0; i < 4; i += 1) await limiter.acquire();
+    expect(limiter.nextAcquireAt()).toBe(8000); // window full → oldest ages out at 8s
+    expect(limiter.nextAcquireAt()).toBe(8000); // idempotent — the peek recorded nothing
+    expect(clock.now()).toBe(0); // and never slept
+  });
+
+  it('includes an active penalty window', () => {
+    const clock = new FakeClock(0);
+    const limiter = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG);
+    limiter.observe(obs('throttled', { 'retry-after': '30' }));
+    expect(limiter.nextAcquireAt()).toBe(30_000);
+  });
+});
+
 describe('RateLimiter throttle handling', () => {
   it('honors Retry-After (delta-seconds) on a throttle', async () => {
     const clock = new FakeClock(0);

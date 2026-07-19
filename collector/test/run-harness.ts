@@ -55,6 +55,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     depth: opts.entries.length,
     ladderPageSize: 200,
     maxRunMillis: 700_000,
+    maxWaitMillis: 300_000,
     maxAgeHours: 48,
     maxAttempts: 3,
     chunkSize: 5,
@@ -126,6 +127,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
         workerIndex,
         workerCount: config.workerCount,
         maxRunMillis: config.maxRunMillis,
+        maxWaitMillis: config.maxWaitMillis,
         maxAgeHours: config.maxAgeHours,
         maxAttempts: config.maxAttempts,
       },
@@ -195,7 +197,15 @@ export function makeRunHarness(opts: RunHarnessOptions) {
 
 export type RunHarness = ReturnType<typeof makeRunHarness>;
 
-/** Drive full cycles until the snapshot publishes, aborts or idles. */
+/** The collect workflow's cron cadence (snapshot.yml fires every 30 min). */
+export const COLLECT_CRON_GAP_MS = 30 * 60_000;
+
+/**
+ * Drive full cycles until the snapshot publishes, aborts or idles, advancing
+ * the clock by the cron gap between fires — workers defer instead of sleeping
+ * when the limiter's windows are saturated, so real wall-clock time between
+ * fires (not in-run sleeps) is what drains the windows.
+ */
 export async function runToSettle(
   h: RunHarness,
   maxCycles = 30,
@@ -210,6 +220,7 @@ export async function runToSettle(
       (cycle.finalize.phase === 'none' && !cycle.coordinate.hasWork) ||
       cycle.finalize.stopReason === 'idle';
     if (settled) break;
+    h.clock.advance(COLLECT_CRON_GAP_MS);
   }
   return cycles;
 }

@@ -17,13 +17,36 @@ export interface ResolveDeps {
   characterSource: CharacterSource;
   limiter: RateLimiter;
   onWait?: WaitReporter;
+  /**
+   * Stall guards. Before each request the limiter's next slot is peeked; when
+   * it lies at/past `deadlineMs` (epoch-ms, the run's budget end) or `maxWaitMs`
+   * or more away, the resolve defers instead of sleeping — the entry stays
+   * workable and the caller checkpoints for a later run. Without them a
+   * saturated long window (90 req/30 min) paces a >20-minute sleep that idles
+   * away the whole run budget.
+   */
+  deadlineMs?: number;
+  maxWaitMs?: number;
 }
+
+/** Which stall guard cut a resolve short (see ResolveDeps). */
+export type DeferReason = 'max_wait' | 'deadline';
 
 export interface ResolveResult {
   /** GGG requests spent on this character (1 or 2). */
   requests: number;
   /** The raw NDJSON record when the character resolved `ok`. */
   record?: unknown;
+  /** Set when a stall guard tripped: the entry is unchanged (still workable). */
+  deferred?: DeferReason;
+}
+
+/** The tripped stall guard for the limiter's next slot, if any. */
+function deferReason(deps: ResolveDeps): DeferReason | undefined {
+  const at = deps.limiter.nextAcquireAt();
+  if (deps.maxWaitMs !== undefined && at - deps.clock.now() >= deps.maxWaitMs) return 'max_wait';
+  if (deps.deadlineMs !== undefined && at >= deps.deadlineMs) return 'deadline';
+  return undefined;
 }
 
 /** Resolve one character, updating `entry` in place. */
@@ -34,6 +57,8 @@ export async function resolveCharacter(
 ): Promise<ResolveResult> {
   const query = { account: entry.account, character: entry.character };
 
+  const stalled = deferReason(deps);
+  if (stalled) return { requests: 0, deferred: stalled };
   await deps.limiter.acquire(deps.onWait);
   const items = await deps.characterSource.fetchItems(query);
   deps.limiter.observe(items.observation);
@@ -44,9 +69,12 @@ export async function resolveCharacter(
   }
   const itemsData = items.result.data;
 
-  // Items proved the profile public. If the limiter just aborted, leave the
-  // entry pending (don't half-resolve it) — the next run retries from the top.
+  // Items proved the profile public. If the limiter just aborted or a stall
+  // guard tripped, leave the entry pending (don't half-resolve it) — the next
+  // run retries from the top.
   if (deps.limiter.isAborted) return { requests: 1 };
+  const stalledMid = deferReason(deps);
+  if (stalledMid) return { requests: 1, deferred: stalledMid };
 
   await deps.limiter.acquire(deps.onWait);
   const passives = await deps.characterSource.fetchPassives(query);

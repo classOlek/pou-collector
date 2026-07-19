@@ -18,6 +18,7 @@ const base = {
   depth: 500,
   ladderPageSize: 200,
   maxRunMillis: 1_500_000,
+  maxWaitMillis: 300_000,
   maxAgeHours: 48,
   maxAttempts: 3,
   chunkSize: 50,

@@ -147,6 +147,16 @@ export class RateLimiter {
   }
 
   /**
+   * Epoch-ms when the next `acquire` could issue its request: the later of the
+   * penalty window and every pacing window. A pure peek — no waiting, nothing
+   * recorded — so a caller can see a long stall coming (a saturated 30-min
+   * window can pace >20 min ahead) and checkpoint instead of idling through it.
+   */
+  nextAcquireAt(): number {
+    return Math.max(this.penaltyUntil, this.earliestAcquire());
+  }
+
+  /**
    * Earliest time this request may go out without pushing any window over its
    * cap. For a window of `cap` over `periodMs`, if `cap` hits already sit inside
    * the horizon, the request must wait until the cap-th most recent of them ages

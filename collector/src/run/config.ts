@@ -9,6 +9,14 @@ export interface RunConfig {
   ladderPageSize: number;
   /** Wall-clock budget for one run/step; then checkpoint and exit cleanly. */
   maxRunMillis: number;
+  /**
+   * Longest rate-limit wait a worker will sleep through. When the limiter's
+   * next request slot is this far away (or past the run budget), the worker
+   * checkpoints and exits instead of idling the runner — a saturated long
+   * window (e.g. 90 req/30 min) otherwise paces a >20-minute sleep that burns
+   * the whole budget; the next scheduled fire resumes with the window drained.
+   */
+  maxWaitMillis: number;
   /** Snapshot older than this (since ladder capture) aborts (hard block). */
   maxAgeHours: number;
   /** Retryable attempts before a character is declared dead. */

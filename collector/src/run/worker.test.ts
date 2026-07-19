@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import { rawChunkShardPrefix } from '@pou/shared';
 import { ChunkStore, assignedChunkIndices } from '../chunks/chunk-store.js';
-import { LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
+import { LimiterStateStore, workerSlot } from '../rate-limit/limiter-store.js';
+import { COLLECT_CRON_GAP_MS, LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';
 import { readAllShards, tallyOutcomes } from '../../test/helpers.js';
 
@@ -69,7 +70,9 @@ describe('Worker chunk processing', () => {
     // The partial visit produced a durable shard with exactly those records.
     expect((await readAllShards(h.objectStore)).length).toBe(resolved.length);
 
-    // Next run (fresh worker process) finishes without re-fetching.
+    // Next run (fresh worker process, a cron-gap later so the paced windows
+    // have drained) finishes without re-fetching.
+    h.clock.advance(COLLECT_CRON_GAP_MS);
     const second = await h.newWorker(0).runOnce();
     expect(second.stopReason).toBe('assigned_drained');
     const done = await store.load(LEAGUE, 'snap-fixed', 0);
@@ -98,6 +101,81 @@ describe('Worker chunk processing', () => {
     // Nothing was falsely resolved; the block left entries pending for later.
     expect(tally.pending).toBeGreaterThan(0);
     expect(tally.dead).toBe(0);
+  });
+
+  it('detects a saturated long window and checkpoints instead of idling (rate_limit_stall)', async () => {
+    // The production incident: the limiter memory restored from the previous
+    // run's checkpoint holds a full 90-req/30-min window, so the next request
+    // slot is >20 minutes out. The worker must detect that and exit at once —
+    // not sleep through its whole run budget on an idle runner.
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({ entries, config: { chunkSize: 10, workerCount: 1 } });
+    await h.createFire();
+
+    const saturatedAt = h.clock.now() - 1_000;
+    await new LimiterStateStore(h.objectStore).save(
+      LEAGUE,
+      workerSlot(0),
+      {
+        observedRules: [
+          {
+            name: 'Ip',
+            limits: [
+              { hits: 30, periodSec: 60, penaltySec: 120 },
+              { hits: 90, periodSec: 1800, penaltySec: 600 },
+            ],
+            state: [],
+          },
+        ],
+        penaltyUntil: 0,
+        consecutiveThrottles: 0,
+        consecutiveErrors: 0,
+        // floor(90 * 0.9) = 81 recent hits — the 30-min window is full and the
+        // next slot is ~1799s away, far past maxWaitMillis (300s).
+        recentAcquires: Array.from({ length: 81 }, () => saturatedAt),
+      },
+      new Date(h.clock.now()).toISOString(),
+    );
+
+    const start = h.clock.now();
+    const summary = await h.newWorker(0).runOnce();
+
+    expect(summary.stopReason).toBe('rate_limit_stall');
+    expect(summary.requests).toBe(0);
+    expect(h.clock.now()).toBe(start); // exited immediately — never slept the ~30 min
+    expect(h.logs.some((l) => l.includes('too long to idle'))).toBe(true);
+
+    // A cron-gap later the window has drained and collection proceeds normally.
+    h.clock.advance(COLLECT_CRON_GAP_MS);
+    const next = await h.newWorker(0).runOnce();
+    expect(next.stopReason).toBe('assigned_drained');
+    expect(next.requests).toBeGreaterThan(0);
+  });
+
+  it('defers instead of sleeping past the run budget deadline', async () => {
+    // When the next slot fits under maxWaitMillis but falls beyond the run
+    // budget, sleeping can produce no more work — stop without the sleep.
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({
+      entries,
+      config: { chunkSize: 10, workerCount: 1, maxRunMillis: 15_000, maxWaitMillis: 600_000 },
+    });
+    await h.createFire();
+
+    const start = h.clock.now();
+    const summary = await h.newWorker(0).runOnce();
+
+    expect(summary.stopReason).toBe('budget_exhausted');
+    // The observed 15:60:120 window fills after 13 paced requests; the next
+    // slot (start+60s) is past the 15s budget — the worker stopped right there
+    // instead of sleeping to it.
+    expect(h.clock.now() - start).toBeLessThan(15_000);
+    // The mid-character stall left the half-fetched character workable: items
+    // were fetched once, no outcome was recorded.
+    const chunk = await new ChunkStore(h.objectStore).load(LEAGUE, 'snap-fixed', 0);
+    const tally = tallyOutcomes(chunk.characters);
+    expect(tally.ok).toBeGreaterThan(0);
+    expect(tally.pending).toBeGreaterThan(0);
   });
 
   it('applies the outcome policy per character (ok / private / dead / retryable→dead)', async () => {

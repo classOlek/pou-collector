@@ -3,6 +3,7 @@
   "depth": 500,
   "ladderPageSize": 200,
   "maxRunMillis": 1500000,
+  "maxWaitMillis": 300000,
   "maxAgeHours": 48,
   "maxAttempts": 3,
   "chunkSize": 50,

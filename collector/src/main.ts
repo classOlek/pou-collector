@@ -161,6 +161,7 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
       workerIndex,
       workerCount: config.workerCount,
       maxRunMillis: config.maxRunMillis,
+      maxWaitMillis: config.maxWaitMillis,
       maxAgeHours: config.maxAgeHours,
       maxAttempts: config.maxAttempts,
     },

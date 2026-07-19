@@ -42,6 +42,8 @@ export interface WorkerConfig {
   workerIndex: number;
   workerCount: number;
   maxRunMillis: number;
+  /** Longest rate-limit wait worth sleeping through (see RunConfig). */
+  maxWaitMillis: number;
   maxAgeHours: number;
   maxAttempts: number;
 }
@@ -55,7 +57,14 @@ export interface WorkerDeps {
   log?: (message: string) => void;
 }
 
-export type WorkerStopReason = 'no_work' | 'assigned_drained' | 'budget_exhausted' | 'rate_limited';
+export type WorkerStopReason =
+  | 'no_work'
+  | 'assigned_drained'
+  | 'budget_exhausted'
+  | 'rate_limited'
+  /** The limiter's next request slot was maxWaitMillis+ away — a saturated
+   *  long window; checkpoint and let a later run resume, don't idle. */
+  | 'rate_limit_stall';
 
 export interface WorkerSummary {
   workerIndex: number;
@@ -145,7 +154,7 @@ export class Worker {
       if (visit.resolved) chunksResolved += 1;
       addTallies(touched, tallyOutcomes(chunk.characters));
       if (visit.stopped) {
-        stop = this.deps.limiter.isAborted ? 'rate_limited' : 'budget_exhausted';
+        stop = visit.stopped;
         break;
       }
     }
@@ -170,12 +179,17 @@ export class Worker {
     manifest: SnapshotManifest,
     chunk: SnapshotChunk,
     runStart: number,
-  ): Promise<{ requests: number; shardsWritten: number; resolved: boolean; stopped: boolean }> {
+  ): Promise<{
+    requests: number;
+    shardsWritten: number;
+    resolved: boolean;
+    stopped: WorkerStopReason | undefined;
+  }> {
     await this.deleteOrphanShards(manifest, chunk);
 
     const records: unknown[] = [];
     let requests = 0;
-    let stopped = false;
+    let stopped: WorkerStopReason | undefined;
 
     for (const entry of chunk.characters) {
       // Only not-yet-computed characters are workable; every other outcome
@@ -184,11 +198,11 @@ export class Worker {
         continue;
       }
       if (this.deps.limiter.isAborted) {
-        stopped = true;
+        stopped = 'rate_limited';
         break;
       }
       if (this.deps.clock.now() - runStart >= this.config.maxRunMillis) {
-        stopped = true;
+        stopped = 'budget_exhausted';
         break;
       }
       this.log(
@@ -199,9 +213,26 @@ export class Worker {
         characterSource: this.deps.characterSource,
         limiter: this.deps.limiter,
         onWait: this.onWait,
+        deadlineMs: runStart + this.config.maxRunMillis,
+        maxWaitMs: this.config.maxWaitMillis,
       });
       requests += result.requests;
       if (result.record !== undefined) records.push(result.record);
+      if (result.deferred !== undefined) {
+        // A stall guard tripped: sleeping would idle the runner for nothing
+        // (past the budget) or for a saturated long window (>= maxWaitMillis).
+        // Checkpoint what we have; the next scheduled fire resumes with the
+        // window drained.
+        const waitSec = (this.deps.limiter.nextAcquireAt() - this.deps.clock.now()) / 1000;
+        this.log(
+          `rate-limit: next request slot in ${waitSec.toFixed(1)}s — ` +
+            (result.deferred === 'max_wait'
+              ? 'too long to idle, checkpointing for the next run'
+              : 'past the run budget, checkpointing'),
+        );
+        stopped = result.deferred === 'max_wait' ? 'rate_limit_stall' : 'budget_exhausted';
+        break;
+      }
     }
 
     // Shard first, then the chunk checkpoint that owns it (crash in between
