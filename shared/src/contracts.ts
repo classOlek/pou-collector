@@ -9,16 +9,25 @@
 // worked by parallel workers, and is published incrementally (complete: false)
 // until every chunk resolves. A completed snapshot is immutable (hard rule #5);
 // an incomplete one is republished in place on every finalize pass.
-export const SCHEMA_VERSION = 2;
+// v3: snapshot creation decoupled from collection. A create fire CLOSES the
+// previous snapshot — uncollected characters get the terminal outcome
+// `skipped` ("deliberately not collected", distinct from `dead` =
+// unfetchable) and the snapshot publishes with what it has; meta gains
+// `skippedCount` so readers can show collected vs skipped honestly.
+export const SCHEMA_VERSION = 3;
 
-/** Outcome of resolving one queued character ('pending' = not computed yet). */
-export type CharacterOutcome = 'pending' | 'ok' | 'private' | 'retryable' | 'dead';
+/**
+ * Outcome of resolving one queued character. 'pending' = not computed yet;
+ * 'skipped' = deliberately left uncollected when the snapshot was closed
+ * (terminal — never retried, never counted as coverage).
+ */
+export type CharacterOutcome = 'pending' | 'ok' | 'private' | 'retryable' | 'dead' | 'skipped';
 
 /** A count for every outcome (one production tally; see tallyOutcomes). */
 export type OutcomeTally = Record<CharacterOutcome, number>;
 
 export function emptyTally(): OutcomeTally {
-  return { pending: 0, ok: 0, private: 0, retryable: 0, dead: 0 };
+  return { pending: 0, ok: 0, private: 0, retryable: 0, dead: 0, skipped: 0 };
 }
 
 /** The single production outcome tally over queued characters. */
@@ -249,10 +258,15 @@ export interface SnapshotMeta {
   completedAt?: string;
   /** False while chunks are still being computed (data is partial but live). */
   complete: boolean;
-  /** Characters resolved so far (== totalCharacters - pending when complete). */
+  /** Characters resolved so far (fetched outcomes only; skipped excluded). */
   coverage: Coverage;
   /** Characters not yet computed (pending + retryable); 0 when complete. */
   pendingCount: number;
+  /**
+   * Characters deliberately left uncollected when the snapshot was closed by a
+   * create fire. coverage + pendingCount + skippedCount == totalCharacters.
+   */
+  skippedCount: number;
   /** Characters seeded into this snapshot from the roster. */
   totalCharacters: number;
   /** Row count of characters.parquet — must equal coverage.ok (validation gate). */

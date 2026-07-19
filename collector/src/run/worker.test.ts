@@ -27,7 +27,7 @@ describe('Worker chunk processing', () => {
   it('two workers resolve disjoint chunks; together they resolve everything exactly once', async () => {
     const entries = buildLadder(20);
     const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
 
     const w0 = await h.newWorker(0).runOnce();
     const w1 = await h.newWorker(1).runOnce();
@@ -56,7 +56,7 @@ describe('Worker chunk processing', () => {
       entries,
       config: { chunkSize: 10, workerCount: 1, maxRunMillis: 20_000 },
     });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
 
     const first = await h.newWorker(0).runOnce();
     expect(first.stopReason).toBe('budget_exhausted');
@@ -88,7 +88,7 @@ describe('Worker chunk processing', () => {
   it('stops resumably on a rate-limit block, keeping computed outcomes durable', async () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'throttle' }));
     const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
 
     const summary = await h.newWorker(0).runOnce();
 
@@ -109,7 +109,7 @@ describe('Worker chunk processing', () => {
       entry('gone', { kind: 'flaky', fails: 10 }), // retryable → dead (attempts exhausted)
     ];
     const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
 
     // Three runs: enough for `recovers` to heal and `gone` to exhaust 3 attempts.
     await h.newWorker(0).runOnce();
@@ -136,7 +136,7 @@ describe('Worker chunk processing', () => {
 
   it('leaves an over-age snapshot alone (finalize owns the abort)', async () => {
     const h = makeRunHarness({ entries: buildLadder(5), config: { maxAgeHours: 1 } });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     h.clock.advance(2 * 3_600_000);
 
     const summary = await h.newWorker(0).runOnce();

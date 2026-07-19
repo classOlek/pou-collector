@@ -40,14 +40,36 @@ function q(outcome: QueuedCharacter['outcome']): QueuedCharacter {
 
 describe('outcome tallies (single production implementation)', () => {
   it('tallies every outcome and derives coverage from it', () => {
-    const queue = [q('ok'), q('ok'), q('private'), q('dead'), q('retryable'), q('pending')];
-    expect(tallyOutcomes(queue)).toEqual({ pending: 1, ok: 2, private: 1, retryable: 1, dead: 1 });
-    // Coverage is the published subset (ok/private/dead) of the same tally.
+    const queue = [
+      q('ok'),
+      q('ok'),
+      q('private'),
+      q('dead'),
+      q('retryable'),
+      q('pending'),
+      q('skipped'),
+    ];
+    expect(tallyOutcomes(queue)).toEqual({
+      pending: 1,
+      ok: 2,
+      private: 1,
+      retryable: 1,
+      dead: 1,
+      skipped: 1,
+    });
+    // Coverage is the FETCHED subset (ok/private/dead) — skipped is excluded.
     expect(coverageOf(queue)).toEqual({ ok: 2, private: 1, dead: 1 });
   });
 
   it('is empty for an empty queue', () => {
-    expect(tallyOutcomes([])).toEqual({ pending: 0, ok: 0, private: 0, retryable: 0, dead: 0 });
+    expect(tallyOutcomes([])).toEqual({
+      pending: 0,
+      ok: 0,
+      private: 0,
+      retryable: 0,
+      dead: 0,
+      skipped: 0,
+    });
     expect(coverageOf([])).toEqual({ ok: 0, private: 0, dead: 0 });
   });
 
@@ -55,7 +77,7 @@ describe('outcome tallies (single production implementation)', () => {
     const rollup = emptyTally();
     addTallies(rollup, tallyOutcomes([q('ok'), q('pending')]));
     addTallies(rollup, tallyOutcomes([q('ok'), q('retryable'), q('private')]));
-    expect(rollup).toEqual({ pending: 1, ok: 2, private: 1, retryable: 1, dead: 0 });
+    expect(rollup).toEqual({ pending: 1, ok: 2, private: 1, retryable: 1, dead: 0, skipped: 0 });
     expect(coverageOfTally(rollup)).toEqual({ ok: 2, private: 1, dead: 0 });
     // Not-yet-computed = pending + retryable (both get another sweep).
     expect(pendingOfTally(rollup)).toBe(2);
@@ -67,6 +89,8 @@ describe('chunk helpers', () => {
     expect(isChunkResolved({ characters: [q('ok'), q('private'), q('dead')] })).toBe(true);
     expect(isChunkResolved({ characters: [q('ok'), q('pending')] })).toBe(false);
     expect(isChunkResolved({ characters: [q('ok'), q('retryable')] })).toBe(false);
+    // Skipped is terminal: closing a snapshot resolves its chunks.
+    expect(isChunkResolved({ characters: [q('ok'), q('skipped')] })).toBe(true);
     expect(isChunkResolved({ characters: [] })).toBe(true);
   });
 

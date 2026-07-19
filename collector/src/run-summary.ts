@@ -10,6 +10,7 @@
 import { appendFileSync } from 'node:fs';
 import type { LimiterMemory } from '@pou/shared';
 import type { CoordinatorSummary } from './run/coordinator.js';
+import type { CreateSummary } from './run/create-snapshot.js';
 import type { WorkerSummary } from './run/worker.js';
 import type { FinalizeSummary } from './run/finalize.js';
 import type { TransformSummary } from './transform/transform.js';
@@ -27,12 +28,21 @@ export const HAS_WORK_TRUE = 'true';
 export const WORKERS_OUTPUT_KEY = 'workers';
 
 /**
- * Exit policy for the coordinate step: fail only when THIS run aborted the
- * snapshot (ladder capture failed hard). Idling through a cooldown or running
- * out of budget mid-capture are clean exits — re-failing every cron fire would
- * re-alert for a failure that already alerted.
+ * Exit policy for the collect workflow's coordinate step: it only reads the
+ * manifest and reports the fan-out, so it always exits clean — failures here
+ * are thrown errors (R2 unreachable), not summary states.
  */
-export function coordinateExitCode(summary: CoordinatorSummary): number {
+export function coordinateExitCode(): number {
+  return 0;
+}
+
+/**
+ * Exit policy for the create-snapshot step: fail only when THIS run aborted the
+ * new snapshot (ladder capture failed hard). Closing results, cadence skips and
+ * a budget-exhausted capture are clean exits; close-transform failures throw
+ * before a summary exists and fail the job on their own.
+ */
+export function createExitCode(summary: CreateSummary): number {
   return summary.stopReason === 'aborted' ? 1 : 0;
 }
 
@@ -71,34 +81,24 @@ export function renderObservedLimits(memory: LimiterMemory): string {
   return table(['rule', 'limit (hits:period:penalty)', 'state'], rows);
 }
 
-export function renderCoordinateSummary(
-  summary: CoordinatorSummary,
-  memory: LimiterMemory,
-): RenderedSummary {
+export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSummary {
   const markdown = [
     '## Coordinate run',
     '',
     table(
-      ['phase', 'stop reason', 'has work', 'workers', 'requests'],
+      ['phase', 'stop reason', 'has work', 'workers', 'pending', 'total characters', 'chunks'],
       [
         [
           summary.phase,
           summary.stopReason,
           String(summary.hasWork),
           summary.workers.length,
-          summary.requests,
+          summary.pendingCount,
+          summary.totalCharacters,
+          summary.chunkCount,
         ],
       ],
     ),
-    '',
-    '### Snapshot queue',
-    table(
-      ['roster size', 'roster added', 'total characters', 'chunks'],
-      [[summary.rosterSize, summary.rosterAdded, summary.totalCharacters, summary.chunkCount]],
-    ),
-    '',
-    '### Observed rate limits',
-    renderObservedLimits(memory),
   ].join('\n');
 
   return {
@@ -115,6 +115,63 @@ export function renderCoordinateSummary(
       stopReason: summary.stopReason,
       hasWork: summary.hasWork,
       workers: summary.workers,
+      pendingCount: summary.pendingCount,
+      totalCharacters: summary.totalCharacters,
+      chunkCount: summary.chunkCount,
+    },
+  };
+}
+
+export function renderCreateSummary(
+  summary: CreateSummary,
+  memory: LimiterMemory,
+): RenderedSummary {
+  const closedRow = summary.closed
+    ? [
+        [
+          summary.closed.league,
+          summary.closed.snapshotId,
+          summary.closed.result,
+          summary.closed.skippedMarked,
+        ],
+      ]
+    : [];
+  const markdown = [
+    '## Create snapshot run',
+    '',
+    table(['stop reason', 'requests'], [[summary.stopReason, summary.requests]]),
+    '',
+    '### Closed previous snapshot',
+    summary.closed
+      ? table(['league', 'snapshot', 'result', 'marked skipped'], closedRow)
+      : '_No in-flight snapshot to close._',
+    '',
+    '### Seeded snapshot queue',
+    table(
+      ['roster size', 'roster added', 'total characters', 'chunks'],
+      [[summary.rosterSize, summary.rosterAdded, summary.totalCharacters, summary.chunkCount]],
+    ),
+    '',
+    '### Observed rate limits',
+    renderObservedLimits(memory),
+  ].join('\n');
+
+  return {
+    markdown,
+    outputs: {
+      stop_reason: summary.stopReason,
+      ...(summary.closed
+        ? {
+            closed_snapshot: summary.closed.snapshotId,
+            closed_result: summary.closed.result,
+            marked_skipped: String(summary.closed.skippedMarked),
+          }
+        : {}),
+    },
+    json: {
+      kind: 'create_snapshot',
+      stopReason: summary.stopReason,
+      closed: summary.closed,
       requests: summary.requests,
       rosterSize: summary.rosterSize,
       rosterAdded: summary.rosterAdded,
@@ -148,8 +205,8 @@ export function renderWorkerSummary(
     '',
     '### Outcomes across touched chunks',
     table(
-      ['ok', 'private', 'dead', 'retryable', 'pending'],
-      [[o.ok, o.private, o.dead, o.retryable, o.pending]],
+      ['ok', 'private', 'dead', 'retryable', 'pending', 'skipped'],
+      [[o.ok, o.private, o.dead, o.retryable, o.pending, o.skipped]],
     ),
     '',
     '### Observed rate limits',
@@ -189,8 +246,8 @@ export function renderFinalizeSummary(summary: FinalizeSummary): RenderedSummary
     '',
     '### Outcomes',
     table(
-      ['ok', 'private', 'dead', 'retryable', 'pending'],
-      [[o.ok, o.private, o.dead, o.retryable, o.pending]],
+      ['ok', 'private', 'dead', 'retryable', 'pending', 'skipped'],
+      [[o.ok, o.private, o.dead, o.retryable, o.pending, o.skipped]],
     ),
   ];
   if (summary.transform) blocks.push('', renderTransformBlock(summary.transform));
@@ -217,7 +274,17 @@ function renderTransformBlock(summary: TransformSummary): string {
     `### ${summary.complete ? 'Final' : 'Incremental'} publish`,
     '',
     table(
-      ['snapshot', 'complete', 'characters', 'ok', 'private', 'dead', 'pending', 'raw deleted'],
+      [
+        'snapshot',
+        'complete',
+        'characters',
+        'ok',
+        'private',
+        'dead',
+        'pending',
+        'skipped',
+        'raw deleted',
+      ],
       [
         [
           summary.snapshotId,
@@ -227,6 +294,7 @@ function renderTransformBlock(summary: TransformSummary): string {
           summary.coverage.private,
           summary.coverage.dead,
           summary.pendingCount,
+          summary.skippedCount,
           summary.rawShardsDeleted,
         ],
       ],

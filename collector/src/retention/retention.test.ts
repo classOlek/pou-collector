@@ -51,6 +51,7 @@ async function seedSnapshot(
     complete: true,
     coverage: { ok: 1, private: 0, dead: 0 },
     pendingCount: 0,
+    skippedCount: 0,
     totalCharacters: 1,
     characterCount: 1,
     treeVersion: 't',

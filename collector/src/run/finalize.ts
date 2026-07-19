@@ -114,7 +114,7 @@ export class Finalizer {
     this.log(
       `rollup: ${resolvedChunks}/${rolled.chunkCount} chunks resolved ` +
         `(ok=${outcomes.ok} private=${outcomes.private} dead=${outcomes.dead} ` +
-        `retry=${outcomes.retryable} pending=${outcomes.pending})`,
+        `retry=${outcomes.retryable} pending=${outcomes.pending} skipped=${outcomes.skipped})`,
     );
 
     // 2. Over-age abort (hard block): discard everything, cooldown applies.

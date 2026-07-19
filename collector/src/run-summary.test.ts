@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LimiterMemory } from '@pou/shared';
 import type { CoordinatorSummary } from './run/coordinator.js';
+import type { CreateSummary } from './run/create-snapshot.js';
 import type { FinalizeSummary } from './run/finalize.js';
 import type { WorkerSummary } from './run/worker.js';
 import {
@@ -11,9 +12,11 @@ import {
   HAS_WORK_TRUE,
   WORKERS_OUTPUT_KEY,
   coordinateExitCode,
+  createExitCode,
   emitSummary,
   finalizeExitCode,
   renderCoordinateSummary,
+  renderCreateSummary,
   renderFinalizeSummary,
   renderObservedLimits,
   renderRetentionSummary,
@@ -30,9 +33,22 @@ const seedMemory: LimiterMemory = {
 
 const coordinateSummary: CoordinatorSummary = {
   phase: 'collecting',
-  stopReason: 'seeded',
+  stopReason: 'work_pending',
   hasWork: true,
   workers: [0, 1, 2, 3],
+  totalCharacters: 15720,
+  chunkCount: 315,
+  pendingCount: 12000,
+};
+
+const createSummary: CreateSummary = {
+  stopReason: 'created',
+  closed: {
+    league: 'Standard',
+    snapshotId: 'snap-0',
+    result: 'published',
+    skippedMarked: 220,
+  },
   requests: 75,
   rosterSize: 15720,
   rosterAdded: 240,
@@ -47,13 +63,13 @@ const workerSummary: WorkerSummary = {
   chunksResolved: 11,
   requests: 1100,
   shardsWritten: 11,
-  outcomes: { pending: 3000, ok: 480, private: 15, dead: 5, retryable: 2 },
+  outcomes: { pending: 3000, ok: 480, private: 15, dead: 5, retryable: 2, skipped: 0 },
 };
 
 const finalizeSummary: FinalizeSummary = {
   phase: 'collecting',
   stopReason: 'published_partial',
-  outcomes: { pending: 12000, ok: 3600, private: 100, dead: 20, retryable: 0 },
+  outcomes: { pending: 12000, ok: 3600, private: 100, dead: 20, retryable: 0, skipped: 0 },
   resolvedChunks: 74,
   chunkCount: 315,
   transform: {
@@ -62,6 +78,7 @@ const finalizeSummary: FinalizeSummary = {
     complete: false,
     coverage: { ok: 3600, private: 100, dead: 20 },
     pendingCount: 12000,
+    skippedCount: 0,
     characterCount: 3600,
     detailBytes: { characters: 1000, items: 2000 },
     aggregateRows: { class_distribution: 12 },
@@ -70,13 +87,16 @@ const finalizeSummary: FinalizeSummary = {
 };
 
 describe('exit codes', () => {
-  it('coordinate fails only a run that itself aborted the snapshot', () => {
-    expect(
-      coordinateExitCode({ ...coordinateSummary, phase: 'aborted', stopReason: 'aborted' }),
-    ).toBe(1);
-    expect(coordinateExitCode({ ...coordinateSummary, stopReason: 'idle' })).toBe(0);
-    expect(coordinateExitCode({ ...coordinateSummary, stopReason: 'budget_exhausted' })).toBe(0);
-    expect(coordinateExitCode(coordinateSummary)).toBe(0);
+  it('coordinate always exits clean (request-free manifest check)', () => {
+    expect(coordinateExitCode()).toBe(0);
+  });
+
+  it('create-snapshot fails only a run that itself aborted the new snapshot', () => {
+    expect(createExitCode({ ...createSummary, stopReason: 'aborted' })).toBe(1);
+    expect(createExitCode({ ...createSummary, stopReason: 'too_recent' })).toBe(0);
+    expect(createExitCode({ ...createSummary, stopReason: 'cooldown' })).toBe(0);
+    expect(createExitCode({ ...createSummary, stopReason: 'budget_exhausted' })).toBe(0);
+    expect(createExitCode(createSummary)).toBe(0);
   });
 
   it('finalize fails only real aborts, not clean no-character aborts or partial-publish warnings', () => {
@@ -104,17 +124,36 @@ describe('renderCoordinateSummary', () => {
     expect(HAS_WORK_TRUE).toBe('true');
     expect(WORKERS_OUTPUT_KEY).toBe('workers');
 
-    const rendered = renderCoordinateSummary(coordinateSummary, seedMemory);
+    const rendered = renderCoordinateSummary(coordinateSummary);
     expect(rendered.outputs[HAS_WORK_OUTPUT_KEY]).toBe(HAS_WORK_TRUE);
     expect(JSON.parse(rendered.outputs[WORKERS_OUTPUT_KEY]!)).toEqual([0, 1, 2, 3]);
     expect(rendered.json.kind).toBe('coordinate');
 
-    const idle = renderCoordinateSummary(
-      { ...coordinateSummary, hasWork: false, workers: [], stopReason: 'idle' },
-      seedMemory,
-    );
+    const idle = renderCoordinateSummary({
+      ...coordinateSummary,
+      hasWork: false,
+      workers: [],
+      stopReason: 'idle',
+      pendingCount: 0,
+    });
     expect(idle.outputs[HAS_WORK_OUTPUT_KEY]).toBe('false');
     expect(JSON.parse(idle.outputs[WORKERS_OUTPUT_KEY]!)).toEqual([]);
+  });
+
+  it('renders the create-snapshot summary with the close result', () => {
+    const rendered = renderCreateSummary(createSummary, seedMemory);
+    expect(rendered.json.kind).toBe('create_snapshot');
+    expect(rendered.outputs.stop_reason).toBe('created');
+    expect(rendered.outputs.closed_snapshot).toBe('snap-0');
+    expect(rendered.outputs.closed_result).toBe('published');
+    expect(rendered.outputs.marked_skipped).toBe('220');
+    expect(rendered.markdown).toContain('Closed previous snapshot');
+
+    const noClose: CreateSummary = { ...createSummary };
+    delete (noClose as Partial<CreateSummary>).closed;
+    const fresh = renderCreateSummary(noClose, seedMemory);
+    expect(fresh.outputs.closed_snapshot).toBeUndefined();
+    expect(fresh.markdown).toContain('No in-flight snapshot to close');
   });
 
   it('renders observed X-Rate-Limit rules, or a placeholder when none were seen', () => {
@@ -210,7 +249,7 @@ describe('emitSummary', () => {
   it('appends the markdown and key=value outputs to the GitHub files', async () => {
     const stepSummary = join(dir, 'summary.md');
     const output = join(dir, 'output.txt');
-    emitSummary(renderCoordinateSummary(coordinateSummary, seedMemory), {
+    emitSummary(renderCoordinateSummary(coordinateSummary), {
       GITHUB_STEP_SUMMARY: stepSummary,
       GITHUB_OUTPUT: output,
     });

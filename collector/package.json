@@ -9,6 +9,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
+    "create-snapshot": "tsx src/main.ts create-snapshot",
     "coordinate": "tsx src/main.ts coordinate",
     "work": "tsx src/main.ts work",
     "finalize": "tsx src/main.ts finalize",

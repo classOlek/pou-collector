@@ -1,13 +1,12 @@
 /**
- * End-to-end lifecycle across the coordinate → worker-matrix → finalize
- * boundary (the workflow's three job stages), across multiple simulated
- * workflow fires:
+ * End-to-end lifecycle across both workflows, across multiple simulated fires:
  *
- *   coordinate (capture → roster → seed chunks)
- *     → workers (parallel disjoint chunk resolution)
- *       → finalize (incremental publish while incomplete)
+ *   create-snapshot (capture → roster → seed chunks)
+ *     → collect fires: coordinate (fan-out check)
+ *         → workers (parallel disjoint chunk resolution)
+ *           → finalize (incremental publish while incomplete)
  *   … repeated until …
- *       → finalize (final transform → published, immutable) → idle
+ *           → finalize (final transform → published, immutable) → idle
  *
  * Everything runs against the MockPoeApi and MemoryObjectStore — zero network.
  */
@@ -24,7 +23,7 @@ import { getJson } from '../checkpoint/object-store.js';
 import { LEAGUE, makeRunHarness, runToSettle } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';
 
-describe('coordinate → workers → finalize → published → idle', () => {
+describe('create → collect fires (workers → finalize) → published → idle', () => {
   it('collects across multiple fires with visible incomplete snapshots, then publishes immutably', async () => {
     const entries = buildLadder(30);
     // Two workers, small chunks, and a budget that forces multiple fires.
@@ -32,6 +31,10 @@ describe('coordinate → workers → finalize → published → idle', () => {
       entries,
       config: { chunkSize: 5, workerCount: 2, maxRunMillis: 25_000 },
     });
+
+    // The create workflow seeds the snapshot; collect fires then drain it.
+    const created = await h.createFire();
+    expect(created.stopReason).toBe('created');
 
     const cycles = await runToSettle(h);
     const last = cycles.at(-1)!;

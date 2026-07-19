@@ -1,0 +1,134 @@
+name: Create snapshot
+
+# The snapshot cadence lives HERE: each fire is one create-snapshot pass that
+#   a) CLOSES the previous in-flight snapshot — every still-uncollected
+#      character is marked `skipped` and the snapshot publishes immutably with
+#      whatever was collected (zero collected → clean abort);
+#   b) CREATES the new snapshot — ladder capture, roster merge, chunk seeding.
+# The collect workflow (snapshot.yml) only drains the queue seeded here; it
+# never creates or closes snapshots.
+#
+# Scheduled fires respect the snapshotIntervalHours / abortCooldownHours guards;
+# a manual dispatch bypasses them (COLLECTOR_FORCE_CREATE below).
+#
+# Shares the `snapshot-collector` concurrency group with the collect workflow,
+# so a close can never overlap a collect fire's workers — every R2 object keeps
+# a single writer with no locking.
+on:
+  schedule:
+    - cron: '0 */12 * * *'
+  workflow_dispatch:
+    inputs:
+      league:
+        description: 'Override the collected league (else COLLECTOR_LEAGUE repo variable, else config/collector.json)'
+        required: false
+        type: string
+      depth:
+        description: 'Override the ladder depth (pilot range 200–1000)'
+        required: false
+        type: string
+      reset_aborted:
+        description: 'Clear aborted checkpoints and start a fresh snapshot now (only after the cause of the abort is fixed)'
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: snapshot-collector
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  # Hard rule #1: identifiable User-Agent with a contact address. The
+  # collector throws without it (intended) — a misconfigured run fails loudly.
+  COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
+  # Optional overrides, in precedence order: dispatch input → repository
+  # Actions variable → config file (blank falls through to the next). See
+  # snapshot.yml for the full description of the COLLECTOR_* variable scheme.
+  COLLECTOR_LEAGUE: ${{ inputs.league || vars.COLLECTOR_LEAGUE }}
+  COLLECTOR_DEPTH: ${{ inputs.depth || vars.COLLECTOR_DEPTH }}
+  COLLECTOR_TREE_URL: ${{ vars.COLLECTOR_TREE_URL }}
+  COLLECTOR_LEAGUES: ${{ vars.COLLECTOR_LEAGUES }}
+  COLLECTOR_LADDER_PAGE_SIZE: ${{ vars.COLLECTOR_LADDER_PAGE_SIZE }}
+  COLLECTOR_MAX_RUN_MILLIS: ${{ vars.COLLECTOR_MAX_RUN_MILLIS }}
+  COLLECTOR_MAX_AGE_HOURS: ${{ vars.COLLECTOR_MAX_AGE_HOURS }}
+  COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
+  COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
+  COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
+  COLLECTOR_SNAPSHOT_INTERVAL_HOURS: ${{ vars.COLLECTOR_SNAPSHOT_INTERVAL_HOURS }}
+  COLLECTOR_ABORT_COOLDOWN_HOURS: ${{ vars.COLLECTOR_ABORT_COOLDOWN_HOURS }}
+  COLLECTOR_MAX_TRANSFORM_ATTEMPTS: ${{ vars.COLLECTOR_MAX_TRANSFORM_ATTEMPTS }}
+  COLLECTOR_RETENTION_BUDGET_BYTES: ${{ vars.COLLECTOR_RETENTION_BUDGET_BYTES }}
+  COLLECTOR_KEEP_RECENT_DETAIL: ${{ vars.COLLECTOR_KEEP_RECENT_DETAIL }}
+
+jobs:
+  create:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      # Operator override: clears `aborted` checkpoints so a fresh snapshot
+      # starts instead of serving the abort cooldown. Dispatch-only by
+      # construction (blank on schedule).
+      COLLECTOR_RESET_ABORTED: ${{ inputs.reset_aborted }}
+      # Manual fires bypass the snapshot-interval / cooldown cadence guards.
+      COLLECTOR_FORCE_CREATE: ${{ github.event_name == 'workflow_dispatch' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Close the previous snapshot (uncollected → skipped, publish), then
+      # capture the ladder, merge the roster and seed the new pending chunks.
+      # Exits nonzero when THIS run aborted the new snapshot's ladder capture,
+      # or when closing failed its final transform (thrown error).
+      - name: Create snapshot
+        run: pnpm --filter @pou/collector run create-snapshot
+
+  # Failure alerting: open or update the single pinned issue when the create
+  # step failed/aborted, deduped by a stable title + label (same pattern as the
+  # collect workflow's alert job).
+  alert:
+    needs: [create]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Alert on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Snapshot collector run failed"
+          LABEL="collector-alert"
+          gh label create "$LABEL" --repo "${{ github.repository }}" --color B60205 --description "Snapshot collector failures" 2>/dev/null || true
+          BODY="A create-snapshot fire failed or aborted.
+
+          - Run: $RUN_URL
+          - Commit: ${{ github.sha }}
+          - When: $(date -u +%FT%TZ)
+
+          Check the run's job summary for the stop reason, close result and observed rate-limit headers."
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --label "$LABEL" --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --label "$LABEL" --body "$BODY"
+          fi

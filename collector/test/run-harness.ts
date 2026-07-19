@@ -18,6 +18,7 @@ import {
 import { LegacyCharacterSource, LegacyLadderSource } from '../src/sources/legacy.js';
 import type { HttpClient } from '../src/sources/types.js';
 import { Coordinator, type CoordinatorSummary } from '../src/run/coordinator.js';
+import { SnapshotCreator, type CreateSummary } from '../src/run/create-snapshot.js';
 import { Worker, type WorkerSummary } from '../src/run/worker.js';
 import { Finalizer, type FinalizeSummary } from '../src/run/finalize.js';
 import type { RunConfig } from '../src/run/config.js';
@@ -70,24 +71,39 @@ export function makeRunHarness(opts: RunHarnessOptions) {
   };
   const newLimiter = (): RateLimiter => new RateLimiter(clock, limiterConfig);
 
-  const newCoordinator = (client: HttpClient = api.client): Coordinator =>
-    new Coordinator(config, {
+  const newCoordinator = (): Coordinator =>
+    new Coordinator(
+      { league: config.league, workerCount: config.workerCount },
+      {
+        checkpointStore,
+        log,
+      },
+    );
+
+  const newCreator = (client: HttpClient = api.client, force = false): SnapshotCreator =>
+    new SnapshotCreator(config, {
       clock,
       ladderSource: new LegacyLadderSource(client, { userAgent: UA }),
       checkpointStore,
       objectStore,
       limiter: newLimiter(),
+      finalizerFor: () => newFinalizer(),
+      force,
       newSnapshotId: () => 'snap-fixed',
       log,
     });
 
   /**
-   * A coordinator seeing a DIFFERENT ladder against the same stores/clock —
+   * A creator seeing a DIFFERENT ladder against the same stores/clock —
    * for tests where the ladder rolls between snapshots (roster growth).
    */
-  const newCoordinatorFor = (rolledEntries: MockEntry[], snapshotId: string): Coordinator => {
+  const newCreatorFor = (
+    rolledEntries: MockEntry[],
+    snapshotId: string,
+    force = false,
+  ): SnapshotCreator => {
     const rolledApi = new MockPoeApi({ league: LEAGUE, entries: rolledEntries });
-    return new Coordinator(
+    return new SnapshotCreator(
       { ...config, depth: rolledEntries.length },
       {
         clock,
@@ -95,6 +111,8 @@ export function makeRunHarness(opts: RunHarnessOptions) {
         checkpointStore,
         objectStore,
         limiter: newLimiter(),
+        finalizerFor: () => newFinalizer(),
+        force,
         newSnapshotId: () => snapshotId,
         log,
       },
@@ -139,7 +157,11 @@ export function makeRunHarness(opts: RunHarnessOptions) {
       },
     );
 
-  /** One workflow fire: coordinate → every worker → finalize. */
+  /** One create-snapshot workflow fire: close previous + create/seed new. */
+  const createFire = (force = false): Promise<CreateSummary> =>
+    newCreator(api.client, force).runOnce();
+
+  /** One collect workflow fire: coordinate → every worker → finalize. */
   const runCycle = async (): Promise<{
     coordinate: CoordinatorSummary;
     workers: WorkerSummary[];
@@ -162,9 +184,11 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     config,
     logs,
     newCoordinator,
-    newCoordinatorFor,
+    newCreator,
+    newCreatorFor,
     newWorker,
     newFinalizer,
+    createFire,
     runCycle,
   };
 }

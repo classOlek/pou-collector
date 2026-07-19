@@ -15,6 +15,8 @@ export interface ValidationInput {
   coverage: Coverage;
   /** Characters still awaiting computation (0 on a final publish). */
   pendingCount: number;
+  /** Characters marked skipped when the snapshot was closed. */
+  skippedCount: number;
   /** Characters seeded into the snapshot from the roster. */
   totalCharacters: number;
   characterRowCount: number;
@@ -30,7 +32,15 @@ export interface ValidationResult {
 
 export function validateTransform(input: ValidationInput): ValidationResult {
   const errors: string[] = [];
-  const { meta, coverage, pendingCount, totalCharacters, characterRowCount, aggregates } = input;
+  const {
+    meta,
+    coverage,
+    pendingCount,
+    skippedCount,
+    totalCharacters,
+    characterRowCount,
+    aggregates,
+  } = input;
 
   if (meta.schemaVersion !== SCHEMA_VERSION) {
     errors.push(`meta schemaVersion ${meta.schemaVersion} != ${SCHEMA_VERSION}`);
@@ -48,12 +58,17 @@ export function validateTransform(input: ValidationInput): ValidationResult {
   if (meta.pendingCount !== pendingCount) {
     errors.push(`meta.pendingCount ${meta.pendingCount} != ${pendingCount}`);
   }
+  if (meta.skippedCount !== skippedCount) {
+    errors.push(`meta.skippedCount ${meta.skippedCount} != ${skippedCount}`);
+  }
 
-  // Coverage honesty: resolved + still-pending must add up to the seeded queue.
+  // Coverage honesty: resolved + still-pending + skipped must add up to the
+  // seeded queue (skipped = deliberately uncollected at close, never fetched).
   const summed = coverage.ok + coverage.private + coverage.dead;
-  if (summed + pendingCount !== totalCharacters) {
+  if (summed + pendingCount + skippedCount !== totalCharacters) {
     errors.push(
-      `coverage sum ${summed} + pending ${pendingCount} != total characters ${totalCharacters}`,
+      `coverage sum ${summed} + pending ${pendingCount} + skipped ${skippedCount} ` +
+        `!= total characters ${totalCharacters}`,
     );
   }
 

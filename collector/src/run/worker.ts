@@ -178,7 +178,9 @@ export class Worker {
     let stopped = false;
 
     for (const entry of chunk.characters) {
-      if (entry.outcome === 'ok' || entry.outcome === 'private' || entry.outcome === 'dead') {
+      // Only not-yet-computed characters are workable; every other outcome
+      // (ok/private/dead/skipped) is terminal.
+      if (entry.outcome !== 'pending' && entry.outcome !== 'retryable') {
         continue;
       }
       if (this.deps.limiter.isAborted) {

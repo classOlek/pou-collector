@@ -21,7 +21,7 @@ describe('Finalizer rollup and incremental publish', () => {
       entries,
       config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
     });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     const worker = await h.newWorker(0).runOnce();
     expect(worker.stopReason).toBe('budget_exhausted');
 
@@ -48,7 +48,7 @@ describe('Finalizer rollup and incremental publish', () => {
 
   it('skips publishing when nothing has been collected yet', async () => {
     const h = makeRunHarness({ entries: buildLadder(5) });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     // No worker ran — everything is still pending.
     const summary = await h.newFinalizer().runOnce();
     expect(summary.stopReason).toBe('collecting');
@@ -61,7 +61,7 @@ describe('Finalizer rollup and incremental publish', () => {
       config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
       treeOrigin: new FailingOrigin(),
     });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     await h.newWorker(0).runOnce();
 
     const summary = await h.newFinalizer().runOnce();
@@ -75,7 +75,7 @@ describe('Finalizer rollup and incremental publish', () => {
   it('runs the final transform when the last chunk resolves: published, immutable, cleaned up', async () => {
     const entries = buildLadder(10);
     const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     await h.newWorker(0).runOnce();
     await h.newWorker(1).runOnce();
 
@@ -99,7 +99,7 @@ describe('Finalizer rollup and incremental publish', () => {
   it('aborts a drained snapshot with zero public profiles and discards its artifacts', async () => {
     const entries = Array.from({ length: 5 }, (_, i) => entry(`${i}`, { kind: 'private' }));
     const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     await h.newWorker(0).runOnce();
 
     const summary = await h.newFinalizer().runOnce();
@@ -115,7 +115,7 @@ describe('Finalizer rollup and incremental publish', () => {
       entries: buildLadder(20),
       config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000, maxAgeHours: 1 },
     });
-    await h.newCoordinator().runOnce();
+    await h.createFire();
     await h.newWorker(0).runOnce();
     // An incremental publish made the partial snapshot visible…
     await h.newFinalizer().runOnce();

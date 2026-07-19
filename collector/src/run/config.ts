@@ -17,7 +17,12 @@ export interface RunConfig {
   chunkSize: number;
   /** Parallel worker jobs the workflow fans out per run. */
   workerCount: number;
-  /** Minimum gap between the start of successive snapshots for a league. */
+  /**
+   * Guard for SCHEDULED create-snapshot fires: skip closing/creating when the
+   * previous snapshot began (or completed) less than this many hours ago —
+   * double-fire / misconfigured-cron protection. The actual snapshot cadence is
+   * the create workflow's cron; a dispatch fire bypasses this guard.
+   */
   snapshotIntervalHours: number;
   /** Cooldown after an abort before a fresh snapshot is attempted. */
   abortCooldownHours: number;

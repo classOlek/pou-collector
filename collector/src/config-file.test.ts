@@ -95,11 +95,7 @@ describe('parseConfig', () => {
   });
 
   it('overrides the leagues map wholesale from COLLECTOR_LEAGUES JSON', () => {
-    const cfg = parseConfig(
-      base,
-      { COLLECTOR_LEAGUES: '{"Mirage":"3.29"}' },
-      { Mirage: '3.28' },
-    );
+    const cfg = parseConfig(base, { COLLECTOR_LEAGUES: '{"Mirage":"3.29"}' }, { Mirage: '3.28' });
     expect(cfg.leagues).toEqual({ Mirage: '3.29' });
     expect(() => parseConfig(base, { COLLECTOR_LEAGUES: 'not json' }, {})).toThrow(
       /COLLECTOR_LEAGUES/,

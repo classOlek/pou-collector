@@ -1,13 +1,13 @@
 name: Snapshot collector
 
-# The chunked snapshot pipeline (docs/ARCHITECTURE.md §5). Cron fires every
-# 30 min; each fire is one coordinate → worker-matrix → finalize pass over the
-# R2 state (cron cadence ≠ snapshot cadence — the snapshot interval is a config
-# value):
+# The COLLECT pipeline: drain the queue the create-snapshot workflow seeded.
+# Cron fires every 30 min; each fire is one coordinate → worker-matrix →
+# finalize pass over the R2 state. When the newest snapshot has no uncollected
+# characters the whole fire no-ops (coordinate reports has_work=false).
 #
-#   coordinate — capture the ladder, merge it into the per-league roster, seed
-#                the snapshot's pending chunks; reports has_work + the worker
-#                matrix. Sole writer of the manifest/roster/chunks at this stage.
+#   coordinate — request-free check of the newest snapshot's manifest; reports
+#                has_work + the worker matrix. Never captures the ladder and
+#                never creates/closes snapshots (create-snapshot.yml does).
 #   work       — N parallel jobs, each on its own runner/IP with its own rate
 #                limiter. A worker only touches the chunks it owns
 #                (chunkIndex % workerCount == workerIndex — disjoint by
@@ -15,28 +15,15 @@ name: Snapshot collector
 #   finalize   — rolls chunk outcomes into the manifest and publishes: an
 #                INCOMPLETE snapshot (complete:false, immediately visible)
 #                while chunks remain, the final immutable snapshot once the
-#                queue drains. Then retention.
+#                queue drains naturally. Then retention.
 #
-# A single concurrency group serializes whole fires, so coordinate/finalize
-# never overlap a previous fire's jobs and the R2 state needs no locking.
+# A single concurrency group (shared with create-snapshot.yml) serializes whole
+# fires, so coordinate/finalize never overlap a previous fire's jobs, closes
+# never overlap workers, and the R2 state needs no locking.
 on:
   schedule:
     - cron: '*/30 * * * *'
-  workflow_dispatch:
-    inputs:
-      league:
-        description: 'Override the collected league (else COLLECTOR_LEAGUE repo variable, else config/collector.json)'
-        required: false
-        type: string
-      depth:
-        description: 'Override the ladder depth (pilot range 200–1000)'
-        required: false
-        type: string
-      reset_aborted:
-        description: 'Clear aborted checkpoints and start a fresh snapshot now (only after the cause of the abort is fixed)'
-        required: false
-        type: boolean
-        default: false
+  workflow_dispatch: {}
 
 # Single pipeline: never let two fires overlap. cancel-in-progress is false so
 # an in-flight fire finishes and checkpoints cleanly; the next fire simply
@@ -57,16 +44,17 @@ env:
   # Hard rule #1: identifiable User-Agent with a contact address. The
   # collector throws without it (intended) — a misconfigured run fails loudly.
   COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
-  # Optional overrides, in precedence order: dispatch input → repository
-  # Actions variable → config file (blank falls through to the next). Every
-  # config key is overridable as COLLECTOR_<SNAKE_CASE> (config-file.ts
-  # envKeyFor); COLLECTOR_LEAGUES is the league → tree-version map as JSON.
-  # Variables live in Settings → Secrets and variables → Actions → Variables;
-  # they hold no credentials, so plaintext variables (not secrets) are fine.
-  # The vars context is snapshotted when the run starts, so the coordinator
-  # and every worker of one fire always agree (chunk ownership stays disjoint).
-  COLLECTOR_LEAGUE: ${{ inputs.league || vars.COLLECTOR_LEAGUE }}
-  COLLECTOR_DEPTH: ${{ inputs.depth || vars.COLLECTOR_DEPTH }}
+  # Optional overrides, in precedence order: repository Actions variable →
+  # config file (blank falls through; league/depth dispatch inputs live on the
+  # create-snapshot workflow now). Every config key is overridable as
+  # COLLECTOR_<SNAKE_CASE> (config-file.ts envKeyFor); COLLECTOR_LEAGUES is the
+  # league → tree-version map as JSON. Variables live in Settings → Secrets and
+  # variables → Actions → Variables; they hold no credentials, so plaintext
+  # variables (not secrets) are fine. The vars context is snapshotted when the
+  # run starts, so the coordinator and every worker of one fire always agree
+  # (chunk ownership stays disjoint).
+  COLLECTOR_LEAGUE: ${{ vars.COLLECTOR_LEAGUE }}
+  COLLECTOR_DEPTH: ${{ vars.COLLECTOR_DEPTH }}
   COLLECTOR_TREE_URL: ${{ vars.COLLECTOR_TREE_URL }}
   COLLECTOR_LEAGUES: ${{ vars.COLLECTOR_LEAGUES }}
   COLLECTOR_LADDER_PAGE_SIZE: ${{ vars.COLLECTOR_LADDER_PAGE_SIZE }}
@@ -91,11 +79,6 @@ jobs:
       # silently idling the workers forever).
       has_work: ${{ steps.coordinate.outputs.has_work }}
       workers: ${{ steps.coordinate.outputs.workers }}
-    env:
-      # Operator override: clears `aborted` checkpoints so a fresh snapshot
-      # starts instead of serving the abort cooldown. Dispatch-only by
-      # construction (blank on schedule).
-      COLLECTOR_RESET_ABORTED: ${{ inputs.reset_aborted }}
     steps:
       - uses: actions/checkout@v4
 
@@ -111,9 +94,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Start or continue the snapshot lifecycle. Writes has_work / workers to
-      # the step outputs and a human summary to the job summary; exits nonzero
-      # only when THIS run aborted the snapshot.
+      # Request-free check of the newest snapshot: writes has_work / workers to
+      # the step outputs and a human summary to the job summary. No uncollected
+      # characters → has_work=false and the fire no-ops.
       - name: Coordinate
         id: coordinate
         run: pnpm --filter @pou/collector run coordinate

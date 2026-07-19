@@ -1,14 +1,19 @@
 #!/usr/bin/env tsx
 /**
- * Collector CLI. One entry point, four subcommands matching the workflow's
- * jobs, wired from the environment and the checked-in config file:
+ * Collector CLI. One entry point, five subcommands matching the two workflows'
+ * jobs, wired from the environment and the checked-in config files:
  *
- *   coordinate — start/continue the snapshot lifecycle: capture the ladder,
- *                merge it into the per-league roster, seed the snapshot's
- *                pending chunks, and report whether workers should fan out
+ *   create-snapshot — the create workflow (its cron IS the snapshot cadence):
+ *                close the previous in-flight snapshot (uncollected characters
+ *                marked `skipped`, snapshot published with what it has), then
+ *                capture the ladder, merge it into the per-league roster and
+ *                seed the new snapshot's pending chunks.
+ *                COLLECTOR_RESET_ABORTED=true clears aborted checkpoints first;
+ *                COLLECTOR_FORCE_CREATE=true (dispatch) bypasses cadence guards.
+ *   coordinate — the collect workflow's request-free check: report whether the
+ *                newest snapshot still has uncollected characters
  *                (`has_work` / `workers` outputs). Resumes an in-flight league
- *                first (a workflow_dispatch override league is never stranded).
- *                COLLECTOR_RESET_ABORTED=true clears aborted checkpoints first.
+ *                first (a dispatch-created league is never stranded).
  *   work       — one parallel worker (WORKER_INDEX from the job matrix):
  *                resolves the pending chunks that slot owns this run. Exits 0
  *                on resumable stops (budget / rate-limit) — the next fire
@@ -34,6 +39,7 @@ import type { ObjectStore } from './checkpoint/object-store.js';
 import { createFetchHttpClient } from './http/fetch-client.js';
 import { LegacyCharacterSource, LegacyLadderSource } from './sources/legacy.js';
 import { Coordinator } from './run/coordinator.js';
+import { SnapshotCreator } from './run/create-snapshot.js';
 import { Worker } from './run/worker.js';
 import { Finalizer } from './run/finalize.js';
 import { CachedTreeSource } from './transform/tree-source.js';
@@ -42,9 +48,11 @@ import { runRetention } from './retention/retention.js';
 import { resetAbortedCheckpoints, shouldResetAborted } from './reset-aborted.js';
 import {
   coordinateExitCode,
+  createExitCode,
   emitSummary,
   finalizeExitCode,
   renderCoordinateSummary,
+  renderCreateSummary,
   renderFinalizeSummary,
   renderRetentionSummary,
   renderWorkerSummary,
@@ -65,7 +73,37 @@ function makeObjectStore(): ObjectStore {
   });
 }
 
-async function coordinate(config: CollectorConfig, store: ObjectStore): Promise<number> {
+function makeFinalizerFactory(
+  config: CollectorConfig,
+  store: ObjectStore,
+  checkpointStore: CheckpointStore,
+): (league: string) => Finalizer {
+  const treeSource = new CachedTreeSource(
+    store,
+    new HttpTreeOrigin(createFetchHttpClient(), {
+      treeUrl: config.treeUrl,
+      userAgent: buildUserAgent(),
+    }),
+  );
+  return (league) =>
+    new Finalizer(
+      {
+        league,
+        maxAgeHours: config.maxAgeHours,
+        treeVersion: treeVersionFor(config.leagues, league),
+        maxTransformAttempts: config.maxTransformAttempts,
+      },
+      {
+        clock: systemClock,
+        objectStore: store,
+        checkpointStore,
+        treeSource,
+        log: (message) => console.log(`[finalize] ${message}`),
+      },
+    );
+}
+
+async function createSnapshot(config: CollectorConfig, store: ObjectStore): Promise<number> {
   const userAgent = buildUserAgent();
   const http = createFetchHttpClient();
   const checkpointStore = new CheckpointStore(store);
@@ -73,23 +111,38 @@ async function coordinate(config: CollectorConfig, store: ObjectStore): Promise<
     const cleared = await resetAbortedCheckpoints(checkpointStore);
     console.log(JSON.stringify({ kind: 'reset_aborted', cleared }));
   }
-  const league = await selectCollectLeague(checkpointStore, config.league);
   const limiter = new RateLimiter(systemClock, DEFAULT_LIMITER_CONFIG);
+  const creator = new SnapshotCreator(config, {
+    clock: systemClock,
+    ladderSource: new LegacyLadderSource(http, { userAgent }),
+    checkpointStore,
+    objectStore: store,
+    limiter,
+    finalizerFor: makeFinalizerFactory(config, store, checkpointStore),
+    // Dispatch fires bypass the cadence guards; scheduled fires respect them.
+    force: process.env['COLLECTOR_FORCE_CREATE'] === 'true',
+    log: (message) => console.log(`[create] ${message}`),
+  });
+
+  const summary = await creator.runOnce();
+  emitSummary(renderCreateSummary(summary, limiter.toMemory()));
+  return createExitCode(summary);
+}
+
+async function coordinate(config: CollectorConfig, store: ObjectStore): Promise<number> {
+  const checkpointStore = new CheckpointStore(store);
+  const league = await selectCollectLeague(checkpointStore, config.league);
   const coordinator = new Coordinator(
-    { ...config, league },
+    { league, workerCount: config.workerCount },
     {
-      clock: systemClock,
-      ladderSource: new LegacyLadderSource(http, { userAgent }),
       checkpointStore,
-      objectStore: store,
-      limiter,
       log: (message) => console.log(`[coordinate] ${message}`),
     },
   );
 
   const summary = await coordinator.runOnce();
-  emitSummary(renderCoordinateSummary(summary, limiter.toMemory()));
-  return coordinateExitCode(summary);
+  emitSummary(renderCoordinateSummary(summary));
+  return coordinateExitCode();
 }
 
 async function work(config: CollectorConfig, store: ObjectStore): Promise<number> {
@@ -130,31 +183,10 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
 
 async function finalize(config: CollectorConfig, store: ObjectStore): Promise<number> {
   const checkpointStore = new CheckpointStore(store);
+  // Resolved for the league actually being finalized (which may be an
+  // in-flight league, not config.league); unmapped league → loud failure.
   const league = await selectCollectLeague(checkpointStore, config.league);
-  const treeSource = new CachedTreeSource(
-    store,
-    new HttpTreeOrigin(createFetchHttpClient(), {
-      treeUrl: config.treeUrl,
-      userAgent: buildUserAgent(),
-    }),
-  );
-  const finalizer = new Finalizer(
-    {
-      league,
-      maxAgeHours: config.maxAgeHours,
-      // Resolved for the league actually being finalized (which may be an
-      // in-flight league, not config.league); unmapped league → loud failure.
-      treeVersion: treeVersionFor(config.leagues, league),
-      maxTransformAttempts: config.maxTransformAttempts,
-    },
-    {
-      clock: systemClock,
-      objectStore: store,
-      checkpointStore,
-      treeSource,
-      log: (message) => console.log(`[finalize] ${message}`),
-    },
-  );
+  const finalizer = makeFinalizerFactory(config, store, checkpointStore)(league);
 
   const summary = await finalizer.runOnce();
   emitSummary(renderFinalizeSummary(summary));
@@ -172,6 +204,7 @@ async function retention(config: CollectorConfig, store: ObjectStore): Promise<n
 }
 
 const HANDLERS: Record<string, (cfg: CollectorConfig, store: ObjectStore) => Promise<number>> = {
+  'create-snapshot': createSnapshot,
   coordinate,
   work,
   finalize,

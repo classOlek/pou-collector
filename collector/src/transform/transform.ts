@@ -103,6 +103,8 @@ export interface TransformSummary {
   coverage: Coverage;
   /** Characters still awaiting computation (0 on the final publish). */
   pendingCount: number;
+  /** Characters marked skipped when the snapshot was closed. */
+  skippedCount: number;
   characterCount: number;
   detailBytes: Record<string, number>;
   aggregateRows: Record<string, number>;
@@ -140,6 +142,7 @@ export async function runTransform(
   const { league, snapshotId } = manifest;
   const coverage = coverageOfTally(manifest.outcomes);
   const pendingCount = pendingOfTally(manifest.outcomes);
+  const skippedCount = manifest.outcomes.skipped;
   const workDir = await mkdtemp(join(deps.tmpRoot ?? tmpdir(), 'pou-transform-'));
 
   try {
@@ -227,6 +230,7 @@ export async function runTransform(
         complete: config.complete,
         coverage,
         pendingCount,
+        skippedCount,
         totalCharacters: manifest.totalCharacters,
         characterCount,
         treeVersion: tree.version,
@@ -237,6 +241,7 @@ export async function runTransform(
         meta,
         coverage,
         pendingCount,
+        skippedCount,
         totalCharacters: manifest.totalCharacters,
         characterRowCount: characterCount,
         aggregates,
@@ -308,6 +313,7 @@ export async function runTransform(
       complete: config.complete,
       coverage,
       pendingCount,
+      skippedCount,
       characterCount,
       detailBytes,
       aggregateRows: Object.fromEntries(aggregates.map((a) => [a.kind, a.rows.length])) as Record<
