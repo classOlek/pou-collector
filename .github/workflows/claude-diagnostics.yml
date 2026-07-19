@@ -1,0 +1,91 @@
+name: ClaudeDiagnostics
+
+# General-purpose, agent-facing diagnostics runner.
+#
+# Purpose: let an AI agent (or a human) run one-off debug / diagnostic / repair
+# scripts against the live infrastructure WITHOUT ever handling the R2
+# credentials directly — they stay in GitHub's encrypted secret store and are
+# injected here. This is the sanctioned way for future agents to inspect or
+# repair R2 state (the plaintext environment-variable field must never hold
+# secrets).
+#
+# How to use / extend (see CLAUDE.md "Diagnostics" section):
+#   1. Add a script under `collector/scripts/diagnostics/<name>.ts`. Read what it
+#      needs from `process.env` (R2_* are provided below). Scripts that MUTATE
+#      state must default to a dry run and require an explicit `--apply` flag.
+#   2. Commit it to the branch you dispatch from.
+#   3. Run this workflow, setting `script` to `scripts/diagnostics/<name>.ts` and
+#      `args` to whatever flags the script takes (e.g. `--apply`).
+#
+# The `script` path is constrained to `scripts/diagnostics/` so a dispatch can
+# only run a committed diagnostic, not an arbitrary file.
+on:
+  workflow_dispatch:
+    inputs:
+      script:
+        description: 'Diagnostic to run, relative to collector/ (must be under scripts/diagnostics/)'
+        required: true
+        type: string
+        default: scripts/diagnostics/fix-content-types.ts
+      args:
+        description: 'Arguments passed to the script (e.g. --apply)'
+        required: false
+        type: string
+        default: ''
+
+# Share the collector's single-writer group so a diagnostic can never race a
+# snapshot run against the same R2 bucket.
+concurrency:
+  group: snapshot-collector
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Injected from encrypted secrets — available to any diagnostic script via
+      # process.env. Extend this list when a new diagnostic needs another secret.
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+      R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      R2_BUCKET: ${{ secrets.R2_BUCKET }}
+      COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
+    steps:
+      - uses: actions/checkout@v4
+
+      # Guard: only committed scripts under scripts/diagnostics/ may run.
+      - name: Validate script path
+        env:
+          SCRIPT: ${{ inputs.script }}
+        run: |
+          set -euo pipefail
+          case "$SCRIPT" in
+            scripts/diagnostics/*.ts) ;;
+            *) echo "::error::script must be under scripts/diagnostics/ and end in .ts (got '$SCRIPT')"; exit 1 ;;
+          esac
+          if [[ "$SCRIPT" == *..* ]]; then
+            echo "::error::script path must not contain '..'"; exit 1
+          fi
+          test -f "collector/$SCRIPT" || { echo "::error::collector/$SCRIPT not found"; exit 1; }
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run diagnostic
+        env:
+          SCRIPT: ${{ inputs.script }}
+          ARGS: ${{ inputs.args }}
+        run: pnpm --filter @pou/collector exec tsx "$SCRIPT" $ARGS

@@ -1,0 +1,75 @@
+{
+  "items": [
+    {
+      "verified": false,
+      "w": 2,
+      "h": 3,
+      "league": "TestLeague",
+      "id": "0f1e2d3c4b5a",
+      "name": "Brood Star",
+      "typeLine": "Vaal Regalia",
+      "baseType": "Vaal Regalia",
+      "rarity": "Unique",
+      "ilvl": 86,
+      "inventoryId": "BodyArmour",
+      "corrupted": false,
+      "explicitMods": ["+52 to maximum Life", "18% increased maximum Energy Shield"],
+      "implicitMods": [],
+      "sockets": [
+        { "group": 0, "attr": "S", "sColour": "B" },
+        { "group": 0, "attr": "S", "sColour": "B" },
+        { "group": 0, "attr": "S", "sColour": "B" },
+        { "group": 0, "attr": "D", "sColour": "G" }
+      ],
+      "socketedItems": [
+        {
+          "socket": 0,
+          "support": false,
+          "typeLine": "Cyclone",
+          "properties": [
+            { "name": "Level", "values": [["20", 0]] },
+            { "name": "Quality", "values": [["+20%", 1]] }
+          ]
+        },
+        {
+          "socket": 1,
+          "support": true,
+          "typeLine": "Melee Physical Damage Support",
+          "properties": [{ "name": "Level", "values": [["20", 0]] }]
+        },
+        {
+          "socket": 2,
+          "support": true,
+          "typeLine": "Infused Channelling Support",
+          "properties": [{ "name": "Level", "values": [["21", 0]] }]
+        }
+      ]
+    },
+    {
+      "verified": false,
+      "w": 2,
+      "h": 4,
+      "league": "TestLeague",
+      "id": "aabbccddeeff",
+      "name": "",
+      "typeLine": "Vaal Axe",
+      "baseType": "Vaal Axe",
+      "rarity": "Rare",
+      "ilvl": 84,
+      "inventoryId": "Weapon",
+      "corrupted": false,
+      "explicitMods": ["Adds 20 to 40 Physical Damage"],
+      "sockets": [{ "group": 0, "attr": "S", "sColour": "R" }],
+      "socketedItems": []
+    }
+  ],
+  "character": {
+    "name": "PlaceholderChar",
+    "league": "TestLeague",
+    "classId": 1,
+    "ascendancyClass": 1,
+    "class": "Juggernaut",
+    "level": 100,
+    "experience": 4250334444
+  }
+}

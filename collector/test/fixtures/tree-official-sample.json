@@ -1,0 +1,34 @@
+{
+  "tree": "Default",
+  "nodes": {
+    "root": {
+      "group": 0,
+      "orbit": 0,
+      "orbitIndex": 0,
+      "out": ["50459", "47175", "50986"],
+      "in": []
+    },
+    "94": {
+      "skill": 94,
+      "name": "Evasion",
+      "icon": "Art/2DArt/SkillIcons/passives/evasion.png",
+      "stats": ["14% increased Evasion Rating"],
+      "group": 32,
+      "orbit": 4
+    },
+    "89": {
+      "skill": 89,
+      "name": "Mine Mastery",
+      "isMastery": true,
+      "stats": [],
+      "group": 590
+    },
+    "31961": {
+      "skill": 31961,
+      "name": "Resolute Technique",
+      "isKeystone": true,
+      "stats": ["Your hits can't be Evaded\nNever deal Critical Strikes"],
+      "group": 3
+    }
+  }
+}

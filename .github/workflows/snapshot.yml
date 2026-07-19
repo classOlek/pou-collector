@@ -1,0 +1,192 @@
+name: Snapshot collector
+
+# The chunked snapshot pipeline (docs/ARCHITECTURE.md §5). Cron fires every
+# 30 min; each fire is one coordinate → worker-matrix → finalize pass over the
+# R2 state (cron cadence ≠ snapshot cadence — the snapshot interval is a config
+# value):
+#
+#   coordinate — capture the ladder, merge it into the per-league roster, seed
+#                the snapshot's pending chunks; reports has_work + the worker
+#                matrix. Sole writer of the manifest/roster/chunks at this stage.
+#   work       — N parallel jobs, each on its own runner/IP with its own rate
+#                limiter. A worker only touches the chunks it owns
+#                (chunkIndex % workerCount == workerIndex — disjoint by
+#                construction, no two workers ever share a chunk).
+#   finalize   — rolls chunk outcomes into the manifest and publishes: an
+#                INCOMPLETE snapshot (complete:false, immediately visible)
+#                while chunks remain, the final immutable snapshot once the
+#                queue drains. Then retention.
+#
+# A single concurrency group serializes whole fires, so coordinate/finalize
+# never overlap a previous fire's jobs and the R2 state needs no locking.
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      league:
+        description: 'Override the collected league (else config/collector.json)'
+        required: false
+        type: string
+      depth:
+        description: 'Override the ladder depth (pilot range 200–1000)'
+        required: false
+        type: string
+      reset_aborted:
+        description: 'Clear aborted checkpoints and start a fresh snapshot now (only after the cause of the abort is fixed)'
+        required: false
+        type: boolean
+        default: false
+
+# Single pipeline: never let two fires overlap. cancel-in-progress is false so
+# an in-flight fire finishes and checkpoints cleanly; the next fire simply
+# continues from the chunk/manifest state.
+concurrency:
+  group: snapshot-collector
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  # Hard rule #1: identifiable User-Agent with a contact address. The
+  # collector throws without it (intended) — a misconfigured run fails loudly.
+  COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
+  # Optional dispatch overrides (blank on schedule → config file wins).
+  COLLECTOR_LEAGUE: ${{ inputs.league }}
+  COLLECTOR_DEPTH: ${{ inputs.depth }}
+
+jobs:
+  coordinate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    outputs:
+      # The fan-out contract (collector/src/run-summary.ts HAS_WORK_OUTPUT_KEY /
+      # WORKERS_OUTPUT_KEY, asserted by a test so a rename fails CI instead of
+      # silently idling the workers forever).
+      has_work: ${{ steps.coordinate.outputs.has_work }}
+      workers: ${{ steps.coordinate.outputs.workers }}
+    env:
+      # Operator override: clears `aborted` checkpoints so a fresh snapshot
+      # starts instead of serving the abort cooldown. Dispatch-only by
+      # construction (blank on schedule).
+      COLLECTOR_RESET_ABORTED: ${{ inputs.reset_aborted }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Start or continue the snapshot lifecycle. Writes has_work / workers to
+      # the step outputs and a human summary to the job summary; exits nonzero
+      # only when THIS run aborted the snapshot.
+      - name: Coordinate
+        id: coordinate
+        run: pnpm --filter @pou/collector run coordinate
+
+  work:
+    needs: coordinate
+    if: needs.coordinate.outputs.has_work == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      # One failed worker must not cancel its siblings — the remaining chunks
+      # simply wait for the next fire.
+      fail-fast: false
+      matrix:
+        worker: ${{ fromJSON(needs.coordinate.outputs.workers) }}
+    env:
+      WORKER_INDEX: ${{ matrix.worker }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Resolve the chunks this worker slot owns. Resumable stops (budget /
+      # rate-limit) are clean exits; the next fire continues the queue.
+      - name: Work
+        run: pnpm --filter @pou/collector run work
+
+  finalize:
+    needs: [coordinate, work]
+    # Runs whenever coordinate succeeded — even when workers were skipped
+    # (nothing pending) or some failed (their chunks stay pending). Skipped on
+    # coordinate failure: there is nothing consistent to roll up.
+    if: always() && needs.coordinate.result == 'success' && needs.work.result != 'cancelled'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Roll up chunk outcomes, publish (incremental while incomplete, final
+      # immutable publish once drained), then retention. Idempotent and safe to
+      # re-run.
+      - name: Finalize & publish
+        run: pnpm --filter @pou/collector run finalize
+
+  # Failure alerting (Phase 4 #11): open or update a single pinned issue when
+  # any stage of a fire failed/aborted, deduped by a stable title + label.
+  alert:
+    needs: [coordinate, work, finalize]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Alert on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Snapshot collector run failed"
+          LABEL="collector-alert"
+          gh label create "$LABEL" --repo "${{ github.repository }}" --color B60205 --description "Snapshot collector failures" 2>/dev/null || true
+          BODY="A snapshot collector fire failed or aborted.
+
+          - Run: $RUN_URL
+          - Commit: ${{ github.sha }}
+          - When: $(date -u +%FT%TZ)
+
+          Check the run's job summaries (coordinate / workers / finalize) for the phase, stop reason, and observed rate-limit headers."
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --label "$LABEL" --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --label "$LABEL" --body "$BODY"
+          fi

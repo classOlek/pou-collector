@@ -1,0 +1,17 @@
+{
+  "version": "3.25-test",
+  "nodes": [
+    { "hash": 123, "name": "Strength", "stats": ["+10 to Strength"], "isKeystone": false },
+    { "hash": 456, "name": "Life Regeneration", "stats": ["1% of Life Regenerated per second"], "isKeystone": false },
+    { "hash": 789, "name": "Armour Mastery", "stats": ["+500 to Armour"], "isKeystone": false },
+    { "hash": 4271, "name": "Resolute Technique", "stats": ["Your hits can't be Evaded", "Never deal Critical Strikes"], "isKeystone": true },
+    { "hash": 55833, "name": "Unwavering Stance", "stats": ["Cannot Evade enemy Attacks", "Cannot be Stunned"], "isKeystone": true },
+    { "hash": 63490, "name": "Iron Reflexes", "stats": ["Converts all Evasion Rating to Armour"], "isKeystone": true },
+    { "hash": 11455, "name": "Elemental Overload", "stats": ["40% more Elemental Damage if you've crit recently"], "isKeystone": true },
+    { "hash": 200, "name": "Mana Flows", "stats": ["+20 to maximum Mana"], "isKeystone": false },
+    { "hash": 201, "name": "Fatal Blade", "stats": ["10% increased Physical Damage with Swords"], "isKeystone": false },
+    { "hash": 202, "name": "Path of the Warrior", "stats": ["+15 to Strength and Dexterity"], "isKeystone": false },
+    { "hash": 203, "name": "Devotion", "stats": ["+10 to all Attributes"], "isKeystone": false },
+    { "hash": 204, "name": "Golem's Blood", "stats": ["0.5% of Life Regenerated per second"], "isKeystone": false }
+  ]
+}
