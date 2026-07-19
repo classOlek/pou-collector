@@ -11,10 +11,14 @@
  * rate-limit windows.
  *
  * Mechanism, single-writer by construction:
- *  - a worker that fully drains its assignment writes a tiny done marker under
- *    ITS OWN slot (state/<league>/workers/<slot>.done.json — the shared
- *    workerStatePath helper with a ".done"-suffixed slot, so the key stays
- *    inside the workers/ prefix retention already classifies and never sweeps);
+ *  - a worker whose run ends — ANY clean stop: assignment drained, budget
+ *    spent, rate-limit stall/abort — writes a tiny done marker under ITS OWN
+ *    slot (state/<league>/workers/<slot>.done.json — the shared workerStatePath
+ *    helper with a ".done"-suffixed slot, so the key stays inside the workers/
+ *    prefix retention already classifies and never sweeps). Every clean stop
+ *    counts because the marker tracks "this slot's JOB has exited this fire":
+ *    a fleet that mostly stalled on rate limits must still release its
+ *    stragglers, exactly like a fleet that mostly drained;
  *  - markers carry the workflow fire's run id (GITHUB_RUN_ID): a marker from a
  *    previous fire never counts, so stale markers need no cleanup — each slot
  *    just overwrites its own on the next drained run;
@@ -30,11 +34,13 @@ import type { Clock } from '../rate-limit/clock.js';
 import { getJson, putJson, type ObjectStore } from '../checkpoint/object-store.js';
 import { workerSlot } from '../rate-limit/limiter-store.js';
 
-/** One completed-assignment marker (collector-private, run-id-scoped). */
+/** One finished-run marker (collector-private, run-id-scoped). */
 export interface WorkerDoneMarker {
   slot: string;
   runId: string;
   finishedAt: string;
+  /** Why the run ended (WorkerStopReason; diagnostic only, not counted). */
+  stopReason?: string;
 }
 
 /** Throttle between marker sweeps — a sweep is cheap (one small GET per peer),
@@ -80,13 +86,14 @@ export class QuorumMonitor {
     return this.config.earlyStopQuorum > 0 && this.config.runId !== '';
   }
 
-  /** Record this worker's own drained assignment (no-op while disabled). */
-  async markSelfDone(nowIso: string): Promise<void> {
+  /** Record this worker's own finished run (no-op while disabled). */
+  async markSelfDone(nowIso: string, stopReason: string): Promise<void> {
     if (!this.enabled) return;
     const marker: WorkerDoneMarker = {
       slot: workerSlot(this.config.workerIndex),
       runId: this.config.runId,
       finishedAt: nowIso,
+      stopReason,
     };
     await putJson(
       this.deps.objectStore,

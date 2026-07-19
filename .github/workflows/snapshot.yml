@@ -73,8 +73,9 @@ env:
   COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
   COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
   COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
-  # Early stop: once this many workers drained their whole assignment, the
-  # rest checkpoint and stop (their chunks resume next fire). 0/unset = off.
+  # Early stop: once this many worker jobs finished their run this fire (any
+  # clean stop — drained, budget spent, rate-limit stall), the rest checkpoint
+  # and stop (their chunks resume next fire). 0/unset = off.
   COLLECTOR_EARLY_STOP_QUORUM: ${{ vars.COLLECTOR_EARLY_STOP_QUORUM }}
   # Minimum gap between work waves (the fleet's aggregate-politeness dial —
   # with pace state scoped per runner IP, wave cadence bounds total load on

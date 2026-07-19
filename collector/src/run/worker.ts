@@ -56,10 +56,11 @@ export interface WorkerConfig {
    */
   runId: string;
   /**
-   * Early stop: once at least this many workers have drained their WHOLE
-   * assignment this fire, the rest checkpoint and stop instead of dragging the
-   * fire out (0 = disabled). Safe by construction: a stopped worker's chunks
-   * stay pending and resume under the same slot on the next fire.
+   * Early stop: once at least this many workers have finished their run this
+   * fire (any clean stop — drained, budget spent, rate-limit stall), the rest
+   * checkpoint and stop instead of dragging the fire out (0 = disabled). Safe
+   * by construction: a stopped worker's chunks stay pending and resume under
+   * the same slot on the next fire.
    */
   earlyStopQuorum: number;
   /** Marker sweep throttle override (test seam); see QUORUM_CHECK_INTERVAL_MS. */
@@ -89,7 +90,7 @@ export type WorkerStopReason =
   /** The limiter's next request slot was maxWaitMillis+ away — a saturated
    *  long window; checkpoint and let a later run resume, don't idle. */
   | 'rate_limit_stall'
-  /** Enough sibling workers drained their whole assignment (earlyStopQuorum):
+  /** Enough sibling workers finished their run this fire (earlyStopQuorum):
    *  checkpoint and stop so one straggler doesn't hold finalize — and the next
    *  cron fire, via the shared concurrency group — hostage. */
   | 'quorum_stopped';
@@ -208,11 +209,12 @@ export class Worker {
       }
     }
 
-    // A fully drained assignment counts toward the early-stop quorum: publish
-    // this slot's done marker so still-running siblings can see it.
-    if (stop === 'assigned_drained') {
-      await this.quorum.markSelfDone(new Date(this.deps.clock.now()).toISOString());
-    }
+    // Every clean stop ends this slot's job for the fire, so every one counts
+    // toward the early-stop quorum — not just a drained assignment. (A wave
+    // where most workers stall on saturated rate-limit windows would otherwise
+    // write no markers at all, and the stragglers would grind out their full
+    // budget while every finished sibling job waits on them.)
+    await this.quorum.markSelfDone(new Date(this.deps.clock.now()).toISOString(), stop);
 
     await this.limiterStates.save(
       this.config.league,

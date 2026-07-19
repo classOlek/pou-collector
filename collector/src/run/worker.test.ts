@@ -311,14 +311,19 @@ describe('Worker chunk processing', () => {
     const w0 = await h.newWorker(0, h.api.client, 'run-A').runOnce();
     expect(w0.stopReason).toBe('assigned_drained');
     const marker = await getJson<WorkerDoneMarker>(h.objectStore, workerDonePath(LEAGUE, 0));
-    expect(marker).toMatchObject({ slot: 'w0', runId: 'run-A' });
+    expect(marker).toMatchObject({ slot: 'w0', runId: 'run-A', stopReason: 'assigned_drained' });
 
-    // w1 (same fire) sees the quorum met before its first fetch and stops —
-    // without marking ITSELF done and without touching its chunks.
+    // w1 (same fire) sees the quorum met before its first fetch and stops
+    // without touching its chunks; its exit publishes a marker of its own
+    // (its job is over too).
     const w1 = await h.newWorker(1, h.api.client, 'run-A').runOnce();
     expect(w1.stopReason).toBe('quorum_stopped');
     expect(w1.requests).toBe(0);
-    expect(await getJson(h.objectStore, workerDonePath(LEAGUE, 1))).toBeUndefined();
+    expect(await getJson(h.objectStore, workerDonePath(LEAGUE, 1))).toMatchObject({
+      slot: 'w1',
+      runId: 'run-A',
+      stopReason: 'quorum_stopped',
+    });
     const store = new ChunkStore(h.objectStore);
     expect(pendingChunkIndices(await store.loadAll(LEAGUE, 'snap-fixed', 4))).toEqual([1, 3]);
 
@@ -329,6 +334,47 @@ describe('Worker chunk processing', () => {
     expect(w1Next.stopReason).toBe('assigned_drained');
     expect(pendingChunkIndices(await store.loadAll(LEAGUE, 'snap-fixed', 4))).toEqual([]);
     expect(h.api.itemCalls.get('acct-6/char-6')).toBe(1); // fetched exactly once
+  });
+
+  it('counts rate-limit-stalled siblings toward the quorum (any clean stop ends the job)', async () => {
+    // The observed production failure: most of the fleet exits with
+    // `rate_limit_stall` (saturated long windows), and if only drained
+    // assignments counted, no markers would exist and the stragglers would
+    // grind out their whole budget with every sibling job already finished.
+    const h = makeRunHarness({
+      entries: buildLadder(20),
+      config: { chunkSize: 5, workerCount: 2, earlyStopQuorum: 1 },
+    });
+    await h.createFire();
+
+    // A 429's Retry-After parked w0's slot far past maxWaitMillis: it stalls
+    // out before its first fetch — and that exit still publishes its marker.
+    await new LimiterStateStore(h.objectStore).save(
+      LEAGUE,
+      workerSlot(0),
+      {
+        observedRules: [],
+        penaltyUntil: h.clock.now() + 3_600_000,
+        consecutiveThrottles: 1,
+        consecutiveErrors: 0,
+        recentAcquires: [],
+        originIp: '203.0.113.7',
+      },
+      new Date(h.clock.now()).toISOString(),
+    );
+    const w0 = await h.newWorker(0, h.api.client, 'run-A').runOnce();
+    expect(w0.stopReason).toBe('rate_limit_stall');
+    expect(await getJson(h.objectStore, workerDonePath(LEAGUE, 0))).toMatchObject({
+      slot: 'w0',
+      runId: 'run-A',
+      stopReason: 'rate_limit_stall',
+    });
+
+    // w1 (same fire, healthy limiter) sees the quorum met and stops early
+    // instead of running its whole assignment while w0's job sits finished.
+    const w1 = await h.newWorker(1, h.api.client, 'run-A').runOnce();
+    expect(w1.stopReason).toBe('quorum_stopped');
+    expect(w1.requests).toBe(0);
   });
 
   it('checkpoints partial progress durably when the quorum lands mid-chunk', async () => {
