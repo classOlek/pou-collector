@@ -60,6 +60,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     maxAttempts: 3,
     chunkSize: 5,
     workerCount: 2,
+    earlyStopQuorum: 0,
     snapshotIntervalHours: 12,
     abortCooldownHours: 6,
     ...opts.config,
@@ -120,7 +121,14 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     );
   };
 
-  const newWorker = (workerIndex: number, client: HttpClient = api.client): Worker =>
+  // The quorum sweep is unthrottled (interval 0) so tests see marker changes
+  // deterministically instead of depending on fake-clock movement; with the
+  // default earlyStopQuorum of 0 the quorum machinery is inert anyway.
+  const newWorker = (
+    workerIndex: number,
+    client: HttpClient = api.client,
+    runId = 'run-0',
+  ): Worker =>
     new Worker(
       {
         league: config.league,
@@ -130,6 +138,9 @@ export function makeRunHarness(opts: RunHarnessOptions) {
         maxWaitMillis: config.maxWaitMillis,
         maxAgeHours: config.maxAgeHours,
         maxAttempts: config.maxAttempts,
+        runId,
+        earlyStopQuorum: config.earlyStopQuorum,
+        quorumCheckIntervalMillis: 0,
       },
       {
         clock,
@@ -163,16 +174,20 @@ export function makeRunHarness(opts: RunHarnessOptions) {
   const createFire = (force = false): Promise<CreateSummary> =>
     newCreator(api.client, force).runOnce();
 
-  /** One collect workflow fire: coordinate → every worker → finalize. */
+  /** One collect workflow fire: coordinate → every worker → finalize. Each
+   *  fire gets its own runId, as GITHUB_RUN_ID does in production. */
+  let fireSeq = 0;
   const runCycle = async (): Promise<{
     coordinate: CoordinatorSummary;
     workers: WorkerSummary[];
     finalize: FinalizeSummary;
   }> => {
+    fireSeq += 1;
+    const runId = `run-${fireSeq}`;
     const coordinate = await newCoordinator().runOnce();
     const workers: WorkerSummary[] = [];
     for (const index of coordinate.workers) {
-      workers.push(await newWorker(index).runOnce());
+      workers.push(await newWorker(index, api.client, runId).runOnce());
     }
     const finalize = await newFinalizer().runOnce();
     return { coordinate, workers, finalize };

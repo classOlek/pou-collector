@@ -8,6 +8,7 @@
   "maxAttempts": 3,
   "chunkSize": 50,
   "workerCount": 4,
+  "earlyStopQuorum": 0,
   "snapshotIntervalHours": 12,
   "abortCooldownHours": 6,
   "maxTransformAttempts": 3,

@@ -35,6 +35,7 @@ import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
 import type { CharacterSource } from '../sources/types.js';
 import { ChunkStore, assignedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
 import { HOUR_MS } from './config.js';
+import { QuorumMonitor } from './worker-quorum.js';
 import { resolveCharacter, type WaitReporter } from './resolve-character.js';
 
 export interface WorkerConfig {
@@ -46,6 +47,20 @@ export interface WorkerConfig {
   maxWaitMillis: number;
   maxAgeHours: number;
   maxAttempts: number;
+  /**
+   * The workflow fire's id (GITHUB_RUN_ID), scoping worker done markers to one
+   * fire. Empty string = unavailable (local run) → early stop is inert.
+   */
+  runId: string;
+  /**
+   * Early stop: once at least this many workers have drained their WHOLE
+   * assignment this fire, the rest checkpoint and stop instead of dragging the
+   * fire out (0 = disabled). Safe by construction: a stopped worker's chunks
+   * stay pending and resume under the same slot on the next fire.
+   */
+  earlyStopQuorum: number;
+  /** Marker sweep throttle override (test seam); see QUORUM_CHECK_INTERVAL_MS. */
+  quorumCheckIntervalMillis?: number | undefined;
 }
 
 export interface WorkerDeps {
@@ -64,7 +79,11 @@ export type WorkerStopReason =
   | 'rate_limited'
   /** The limiter's next request slot was maxWaitMillis+ away — a saturated
    *  long window; checkpoint and let a later run resume, don't idle. */
-  | 'rate_limit_stall';
+  | 'rate_limit_stall'
+  /** Enough sibling workers drained their whole assignment (earlyStopQuorum):
+   *  checkpoint and stop so one straggler doesn't hold finalize — and the next
+   *  cron fire, via the shared concurrency group — hostage. */
+  | 'quorum_stopped';
 
 export interface WorkerSummary {
   workerIndex: number;
@@ -81,6 +100,7 @@ export interface WorkerSummary {
 export class Worker {
   private readonly chunks: ChunkStore;
   private readonly limiterStates: LimiterStateStore;
+  private readonly quorum: QuorumMonitor;
 
   constructor(
     private readonly config: WorkerConfig,
@@ -88,6 +108,17 @@ export class Worker {
   ) {
     this.chunks = new ChunkStore(deps.objectStore);
     this.limiterStates = new LimiterStateStore(deps.objectStore);
+    this.quorum = new QuorumMonitor(
+      {
+        league: config.league,
+        workerIndex: config.workerIndex,
+        workerCount: config.workerCount,
+        runId: config.runId,
+        earlyStopQuorum: config.earlyStopQuorum,
+        checkIntervalMillis: config.quorumCheckIntervalMillis,
+      },
+      { clock: deps.clock, objectStore: deps.objectStore, log: deps.log },
+    );
   }
 
   private log(message: string): void {
@@ -147,6 +178,10 @@ export class Worker {
         stop = 'budget_exhausted';
         break;
       }
+      if (await this.quorum.shouldStop()) {
+        stop = 'quorum_stopped';
+        break;
+      }
 
       const visit = await this.workChunk(manifest, chunk, runStart);
       requests += visit.requests;
@@ -157,6 +192,12 @@ export class Worker {
         stop = visit.stopped;
         break;
       }
+    }
+
+    // A fully drained assignment counts toward the early-stop quorum: publish
+    // this slot's done marker so still-running siblings can see it.
+    if (stop === 'assigned_drained') {
+      await this.quorum.markSelfDone(new Date(this.deps.clock.now()).toISOString());
     }
 
     await this.limiterStates.save(
@@ -203,6 +244,10 @@ export class Worker {
       }
       if (this.deps.clock.now() - runStart >= this.config.maxRunMillis) {
         stopped = 'budget_exhausted';
+        break;
+      }
+      if (await this.quorum.shouldStop()) {
+        stopped = 'quorum_stopped';
         break;
       }
       this.log(

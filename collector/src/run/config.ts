@@ -26,6 +26,15 @@ export interface RunConfig {
   /** Parallel worker jobs the workflow fans out per run. */
   workerCount: number;
   /**
+   * Early-stop quorum: once at least this many workers have drained their
+   * whole assignment in one fire, the remaining workers checkpoint and stop
+   * (stop reason `quorum_stopped`) instead of letting one straggler drag the
+   * fire — and finalize — out. 0 disables (the default). Their leftover chunks
+   * stay pending and resume under the same worker slot on the next cron fire.
+   * Only meaningful when < workerCount.
+   */
+  earlyStopQuorum: number;
+  /**
    * Guard for SCHEDULED create-snapshot fires: skip closing/creating when the
    * previous snapshot began (or completed) less than this many hours ago —
    * double-fire / misconfigured-cron protection. The actual snapshot cadence is

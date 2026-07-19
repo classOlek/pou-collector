@@ -164,6 +164,10 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
       maxWaitMillis: config.maxWaitMillis,
       maxAgeHours: config.maxAgeHours,
       maxAttempts: config.maxAttempts,
+      // GITHUB_RUN_ID scopes the early-stop done markers to one workflow fire
+      // (all matrix jobs of a fire share it). Absent (local run) → inert.
+      runId: process.env['GITHUB_RUN_ID']?.trim() ?? '',
+      earlyStopQuorum: config.earlyStopQuorum,
     },
     {
       clock: systemClock,
