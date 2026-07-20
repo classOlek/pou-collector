@@ -19,9 +19,10 @@
  *              makes that bound explicit and keeps back-to-back dispatches
  *              from multiplying it. 0 disables.
  *
- * Creating and closing snapshots — ladder capture, roster merge, chunk
- * seeding, marking leftovers skipped — lives in the create-snapshot workflow
- * (run/create-snapshot.ts). This step never talks to GGG and never writes
+ * Creating and closing snapshots — chunk seeding and marking leftovers skipped
+ * lives in the new-snapshot workflow (run/create-snapshot.ts), and ladder
+ * capture + roster merge in the build-roster workflow (run/build-roster.ts).
+ * This step never talks to GGG and never writes
  * anything; the rollup in the manifest is finalize's last word on what is
  * still pending.
  */

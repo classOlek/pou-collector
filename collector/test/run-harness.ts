@@ -18,6 +18,7 @@ import {
 import { LegacyCharacterSource, LegacyLadderSource } from '../src/sources/legacy.js';
 import type { HttpClient } from '../src/sources/types.js';
 import { Coordinator, type CoordinatorSummary } from '../src/run/coordinator.js';
+import { RosterBuilder, type BuildSummary } from '../src/run/build-roster.js';
 import { SnapshotCreator, type CreateSummary } from '../src/run/create-snapshot.js';
 import { Worker, type WorkerSummary } from '../src/run/worker.js';
 import { Finalizer, type FinalizeSummary } from '../src/run/finalize.js';
@@ -93,44 +94,58 @@ export function makeRunHarness(opts: RunHarnessOptions) {
       },
     );
 
-  const newCreator = (client: HttpClient = api.client, force = false): SnapshotCreator =>
-    new SnapshotCreator(config, {
+  const newRosterBuilder = (client: HttpClient = api.client): RosterBuilder =>
+    new RosterBuilder(config, {
       clock,
       ladderSource: new LegacyLadderSource(client, { userAgent: UA }),
-      checkpointStore,
       objectStore,
       limiter: newLimiter(),
+      log,
+    });
+
+  /**
+   * A builder seeing a DIFFERENT ladder against the same stores/clock — for
+   * tests where the ladder rolls between builds (roster growth).
+   */
+  const newBuilderFor = (rolledEntries: MockEntry[]): RosterBuilder => {
+    const rolledApi = new MockPoeApi({ league: LEAGUE, entries: rolledEntries });
+    return new RosterBuilder(
+      { ...config, depth: rolledEntries.length },
+      {
+        clock,
+        ladderSource: new LegacyLadderSource(rolledApi.client, { userAgent: UA }),
+        objectStore,
+        limiter: newLimiter(),
+        log,
+      },
+    );
+  };
+
+  // The new-snapshot step is request-free: it seeds from the roster the
+  // build-roster step maintains, so it takes no ladder source or limiter.
+  const newCreator = (force = false): SnapshotCreator =>
+    new SnapshotCreator(config, {
+      clock,
+      checkpointStore,
+      objectStore,
       finalizerFor: () => newFinalizer(),
       force,
       newSnapshotId: () => 'snap-fixed',
       log,
     });
 
-  /**
-   * A creator seeing a DIFFERENT ladder against the same stores/clock —
-   * for tests where the ladder rolls between snapshots (roster growth).
-   */
-  const newCreatorFor = (
-    rolledEntries: MockEntry[],
-    snapshotId: string,
-    force = false,
-  ): SnapshotCreator => {
-    const rolledApi = new MockPoeApi({ league: LEAGUE, entries: rolledEntries });
-    return new SnapshotCreator(
-      { ...config, depth: rolledEntries.length },
-      {
-        clock,
-        ladderSource: new LegacyLadderSource(rolledApi.client, { userAgent: UA }),
-        checkpointStore,
-        objectStore,
-        limiter: newLimiter(),
-        finalizerFor: () => newFinalizer(),
-        force,
-        newSnapshotId: () => snapshotId,
-        log,
-      },
-    );
-  };
+  /** A creator that seeds under a chosen snapshot id (roster is whatever the
+   *  build steps have left in the store). */
+  const newCreatorFor = (snapshotId: string, force = false): SnapshotCreator =>
+    new SnapshotCreator(config, {
+      clock,
+      checkpointStore,
+      objectStore,
+      finalizerFor: () => newFinalizer(),
+      force,
+      newSnapshotId: () => snapshotId,
+      log,
+    });
 
   // The quorum sweep is unthrottled (interval 0) so tests see marker changes
   // deterministically instead of depending on fake-clock movement; with the
@@ -184,9 +199,16 @@ export function makeRunHarness(opts: RunHarnessOptions) {
       },
     );
 
-  /** One create-snapshot workflow fire: close previous + create/seed new. */
-  const createFire = (force = false): Promise<CreateSummary> =>
-    newCreator(api.client, force).runOnce();
+  /** One build-roster workflow fire: capture the ladder + merge the roster. */
+  const buildFire = (client: HttpClient = api.client): Promise<BuildSummary> =>
+    newRosterBuilder(client).runOnce();
+
+  /** One new-snapshot workflow fire, preceded by a roster build so there is
+   *  something to seed from: build roster → close previous + seed new. */
+  const createFire = async (force = false): Promise<CreateSummary> => {
+    await buildFire();
+    return newCreator(force).runOnce();
+  };
 
   /** One collect workflow fire: coordinate → every worker → finalize. Each
    *  fire gets its own runId, as GITHUB_RUN_ID does in production. */
@@ -215,10 +237,13 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     config,
     logs,
     newCoordinator,
+    newRosterBuilder,
+    newBuilderFor,
     newCreator,
     newCreatorFor,
     newWorker,
     newFinalizer,
+    buildFire,
     createFire,
     runCycle,
   };

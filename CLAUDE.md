@@ -12,7 +12,7 @@ to an S3-compatible object store (Cloudflare R2). Runs on free tiers
 ## Layout
 
 ```
-├── .github/workflows/   # ci, create-snapshot (cadence), snapshot (collect), claude-diagnostics
+├── .github/workflows/   # ci, build-roster (roster), new-snapshot (cadence), snapshot (collect), claude-diagnostics
 ├── collector/           # TypeScript: coordinate / work / finalize + transform
 ├── shared/              # data contracts (SCHEMA_VERSION, R2 key layout, schema)
 └── config/              # collector.json + leagues.json (league → tree version)

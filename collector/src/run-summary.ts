@@ -10,6 +10,7 @@
 import { appendFileSync } from 'node:fs';
 import type { LimiterMemory } from '@pou/shared';
 import type { CoordinatorSummary } from './run/coordinator.js';
+import type { BuildSummary } from './run/build-roster.js';
 import type { CreateSummary } from './run/create-snapshot.js';
 import type { WorkerSummary } from './run/worker.js';
 import type { FinalizeSummary } from './run/finalize.js';
@@ -37,13 +38,22 @@ export function coordinateExitCode(): number {
 }
 
 /**
- * Exit policy for the create-snapshot step: fail only when THIS run aborted the
- * new snapshot (ladder capture failed hard). Closing results, cadence skips and
- * a budget-exhausted capture are clean exits; close-transform failures throw
- * before a summary exists and fail the job on their own.
+ * Exit policy for the build-roster step: fail only when THIS run aborted its
+ * ladder capture (hard block / a page failing past maxAttempts). A
+ * budget-exhausted capture is a clean exit — the next fire recaptures.
  */
-export function createExitCode(summary: CreateSummary): number {
+export function buildExitCode(summary: BuildSummary): number {
   return summary.stopReason === 'aborted' ? 1 : 0;
+}
+
+/**
+ * Exit policy for the new-snapshot step: always clean. The step is request-free
+ * (it seeds from the roster), so it has no abort of its own; cadence skips and
+ * an empty roster are expected no-ops, and a close-transform failure throws
+ * before a summary exists and fails the job on its own.
+ */
+export function createExitCode(): number {
+  return 0;
 }
 
 /**
@@ -134,10 +144,43 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
   };
 }
 
-export function renderCreateSummary(
-  summary: CreateSummary,
-  memory: LimiterMemory,
-): RenderedSummary {
+export function renderBuildSummary(summary: BuildSummary, memory: LimiterMemory): RenderedSummary {
+  const markdown = [
+    '## Build roster run',
+    '',
+    table(
+      ['stop reason', 'requests', 'roster size', 'added', 'refreshed'],
+      [
+        [
+          summary.stopReason,
+          summary.requests,
+          summary.rosterSize,
+          summary.rosterAdded,
+          summary.rosterRefreshed,
+        ],
+      ],
+    ),
+    '',
+    '### Observed rate limits',
+    renderObservedLimits(memory),
+  ].join('\n');
+
+  return {
+    markdown,
+    outputs: { stop_reason: summary.stopReason },
+    json: {
+      kind: 'build_roster',
+      stopReason: summary.stopReason,
+      requests: summary.requests,
+      rosterSize: summary.rosterSize,
+      rosterAdded: summary.rosterAdded,
+      rosterRefreshed: summary.rosterRefreshed,
+      penaltyUntil: memory.penaltyUntil,
+    },
+  };
+}
+
+export function renderCreateSummary(summary: CreateSummary): RenderedSummary {
   const closedRow = summary.closed
     ? [
         [
@@ -149,9 +192,9 @@ export function renderCreateSummary(
       ]
     : [];
   const markdown = [
-    '## Create snapshot run',
+    '## New snapshot run',
     '',
-    table(['stop reason', 'requests'], [[summary.stopReason, summary.requests]]),
+    table(['stop reason'], [[summary.stopReason]]),
     '',
     '### Closed previous snapshot',
     summary.closed
@@ -160,12 +203,9 @@ export function renderCreateSummary(
     '',
     '### Seeded snapshot queue',
     table(
-      ['roster size', 'roster added', 'total characters', 'chunks'],
-      [[summary.rosterSize, summary.rosterAdded, summary.totalCharacters, summary.chunkCount]],
+      ['roster size', 'total characters', 'chunks'],
+      [[summary.rosterSize, summary.totalCharacters, summary.chunkCount]],
     ),
-    '',
-    '### Observed rate limits',
-    renderObservedLimits(memory),
   ].join('\n');
 
   return {
@@ -181,15 +221,12 @@ export function renderCreateSummary(
         : {}),
     },
     json: {
-      kind: 'create_snapshot',
+      kind: 'new_snapshot',
       stopReason: summary.stopReason,
       closed: summary.closed,
-      requests: summary.requests,
       rosterSize: summary.rosterSize,
-      rosterAdded: summary.rosterAdded,
       totalCharacters: summary.totalCharacters,
       chunkCount: summary.chunkCount,
-      penaltyUntil: memory.penaltyUntil,
     },
   };
 }

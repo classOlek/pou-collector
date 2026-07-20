@@ -1,5 +1,5 @@
 /**
- * Closing an in-flight snapshot (step a of the create-snapshot workflow).
+ * Closing an in-flight snapshot (step a of the new-snapshot workflow).
  *
  * Every character still awaiting computation (pending/retryable) is marked
  * `skipped` — a terminal "deliberately not collected" outcome, distinct from

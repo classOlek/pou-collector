@@ -47,10 +47,10 @@ export interface RunConfig {
    */
   collectCooldownMinutes: number;
   /**
-   * Guard for SCHEDULED create-snapshot fires: skip closing/creating when the
+   * Guard for SCHEDULED new-snapshot fires: skip closing/creating when the
    * previous snapshot began (or completed) less than this many hours ago —
    * double-fire / misconfigured-cron protection. The actual snapshot cadence is
-   * the create workflow's cron; a dispatch fire bypasses this guard.
+   * the new-snapshot workflow's cron; a dispatch fire bypasses this guard.
    */
   snapshotIntervalHours: number;
   /** Cooldown after an abort before a fresh snapshot is attempted. */

@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { LimiterMemory } from '@pou/shared';
 import type { CoordinatorSummary } from './run/coordinator.js';
+import type { BuildSummary } from './run/build-roster.js';
 import type { CreateSummary } from './run/create-snapshot.js';
 import type { FinalizeSummary } from './run/finalize.js';
 import type { WorkerSummary } from './run/worker.js';
@@ -11,10 +12,12 @@ import {
   HAS_WORK_OUTPUT_KEY,
   HAS_WORK_TRUE,
   WORKERS_OUTPUT_KEY,
+  buildExitCode,
   coordinateExitCode,
   createExitCode,
   emitSummary,
   finalizeExitCode,
+  renderBuildSummary,
   renderCoordinateSummary,
   renderCreateSummary,
   renderFinalizeSummary,
@@ -41,6 +44,14 @@ const coordinateSummary: CoordinatorSummary = {
   pendingCount: 12000,
 };
 
+const buildSummary: BuildSummary = {
+  stopReason: 'built',
+  requests: 75,
+  rosterSize: 15720,
+  rosterAdded: 240,
+  rosterRefreshed: 15480,
+};
+
 const createSummary: CreateSummary = {
   stopReason: 'created',
   closed: {
@@ -49,9 +60,7 @@ const createSummary: CreateSummary = {
     result: 'published',
     skippedMarked: 220,
   },
-  requests: 75,
   rosterSize: 15720,
-  rosterAdded: 240,
   totalCharacters: 15720,
   chunkCount: 315,
 };
@@ -91,12 +100,14 @@ describe('exit codes', () => {
     expect(coordinateExitCode()).toBe(0);
   });
 
-  it('create-snapshot fails only a run that itself aborted the new snapshot', () => {
-    expect(createExitCode({ ...createSummary, stopReason: 'aborted' })).toBe(1);
-    expect(createExitCode({ ...createSummary, stopReason: 'too_recent' })).toBe(0);
-    expect(createExitCode({ ...createSummary, stopReason: 'cooldown' })).toBe(0);
-    expect(createExitCode({ ...createSummary, stopReason: 'budget_exhausted' })).toBe(0);
-    expect(createExitCode(createSummary)).toBe(0);
+  it('build-roster fails only a run that itself aborted its ladder capture', () => {
+    expect(buildExitCode({ ...buildSummary, stopReason: 'aborted' })).toBe(1);
+    expect(buildExitCode({ ...buildSummary, stopReason: 'budget_exhausted' })).toBe(0);
+    expect(buildExitCode(buildSummary)).toBe(0);
+  });
+
+  it('new-snapshot always exits clean (request-free; it seeds from the roster)', () => {
+    expect(createExitCode()).toBe(0);
   });
 
   it('finalize fails only real aborts, not clean no-character aborts or partial-publish warnings', () => {
@@ -160,9 +171,18 @@ describe('renderCoordinateSummary', () => {
     expect(open.outputs['blocked_until']).toBeUndefined();
   });
 
-  it('renders the create-snapshot summary with the close result', () => {
-    const rendered = renderCreateSummary(createSummary, seedMemory);
-    expect(rendered.json.kind).toBe('create_snapshot');
+  it('renders the build-roster summary with observed rate limits', () => {
+    const rendered = renderBuildSummary(buildSummary, seedMemory);
+    expect(rendered.json.kind).toBe('build_roster');
+    expect(rendered.outputs.stop_reason).toBe('built');
+    expect(rendered.json.rosterAdded).toBe(240);
+    expect(rendered.markdown).toContain('Build roster run');
+    expect(rendered.markdown).toContain('Observed rate limits');
+  });
+
+  it('renders the new-snapshot summary with the close result', () => {
+    const rendered = renderCreateSummary(createSummary);
+    expect(rendered.json.kind).toBe('new_snapshot');
     expect(rendered.outputs.stop_reason).toBe('created');
     expect(rendered.outputs.closed_snapshot).toBe('snap-0');
     expect(rendered.outputs.closed_result).toBe('published');
@@ -171,7 +191,7 @@ describe('renderCoordinateSummary', () => {
 
     const noClose: CreateSummary = { ...createSummary };
     delete (noClose as Partial<CreateSummary>).closed;
-    const fresh = renderCreateSummary(noClose, seedMemory);
+    const fresh = renderCreateSummary(noClose);
     expect(fresh.outputs.closed_snapshot).toBeUndefined();
     expect(fresh.markdown).toContain('No in-flight snapshot to close');
   });
