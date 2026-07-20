@@ -2,11 +2,13 @@
  * Worker step: one of N parallel chunk consumers (docs/ARCHITECTURE.md §5).
  *
  * Workers run as a GitHub Actions matrix after the coordinator. Each worker:
- *  1. loads the manifest (must be `collecting`) and every chunk file;
- *  2. takes the pending chunks it OWNS this run — the pending chunk list dealt
- *     round-robin by worker index, so ownership is disjoint by construction and
- *     no two workers ever touch the same chunk (the redesign's no-shared-chunk
- *     requirement, with no locks or claims needed);
+ *  1. loads the manifest (must be `collecting`) and ONLY the chunk files it
+ *     owns — the indices where `chunkIndex % workerCount === workerIndex`,
+ *     enumerated from the manifest's chunkCount without reading anything;
+ *  2. takes the still-pending chunks among those it owns — ownership is
+ *     round-robin by worker index, so it is disjoint by construction and no two
+ *     workers ever touch (or even read for) the same chunk (the redesign's
+ *     no-shared-chunk requirement, with no locks or claims needed);
  *  3. resolves each owned chunk's not-yet-computed characters, writes the raw
  *     records as ONE shard per chunk visit, then checkpoints the chunk file
  *     (shard before chunk: a crash in between leaves an orphan shard that
@@ -27,7 +29,6 @@ import {
   emptyTally,
   isChunkResolved,
   rawChunkShardPath,
-  rawChunkShardPrefix,
   tallyOutcomes,
 } from '@pou/shared';
 import type { Clock } from '../rate-limit/clock.js';
@@ -35,9 +36,9 @@ import type { RateLimiter } from '../rate-limit/limiter.js';
 import { workerSlot } from '../rate-limit/limiter-store.js';
 import { LimiterPersistence } from '../rate-limit/limiter-persistence.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
-import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
+import type { ObjectStore } from '../checkpoint/object-store.js';
 import type { CharacterSource } from '../sources/types.js';
-import { ChunkStore, assignedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
+import { ChunkStore, ownedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
 import { HOUR_MS } from './config.js';
 import { QuorumMonitor } from './worker-quorum.js';
 import { resolveCharacter, type WaitReporter } from './resolve-character.js';
@@ -161,16 +162,16 @@ export class Worker {
       );
     }
 
-    const all = await this.chunks.loadAll(
+    // Load only the chunks this slot owns (not the whole snapshot): the reads
+    // scale with a worker's share of the queue, and a near-drained snapshot
+    // stops costing every worker a full-snapshot read on every fire.
+    const owned = await this.chunks.loadMany(
       manifest.league,
       manifest.snapshotId,
-      manifest.chunkCount,
+      ownedChunkIndices(manifest.chunkCount, this.config.workerIndex, this.config.workerCount),
     );
-    const assigned = assignedChunkIndices(
-      pendingChunkIndices(all),
-      this.config.workerIndex,
-      this.config.workerCount,
-    );
+    const ownedByIndex = new Map(owned.map((chunk) => [chunk.chunkIndex, chunk]));
+    const assigned = pendingChunkIndices(owned);
     this.log(
       `worker ${slot}: ${assigned.length} pending chunk(s) assigned of ` +
         `${manifest.chunkCount} total`,
@@ -183,7 +184,7 @@ export class Worker {
     let stop: WorkerStopReason = 'assigned_drained';
 
     for (const chunkIndex of assigned) {
-      const chunk = all[chunkIndex];
+      const chunk = ownedByIndex.get(chunkIndex);
       if (!chunk) continue;
       if (this.deps.limiter.isAborted) {
         stop = 'rate_limited';
@@ -316,18 +317,28 @@ export class Worker {
     return { requests, shardsWritten, resolved: isChunkResolved(chunk), stopped };
   }
 
-  /** Remove shards at/past the chunk's committed cursor (crash-resume safety). */
+  /**
+   * Clear the one shard a crash between the shard PUT and the chunk checkpoint
+   * can orphan. A visit writes exactly one shard at seq == shardsWritten and
+   * only then bumps the cursor and saves the chunk, so a resumed chunk has at
+   * most one orphan, always at seq == shardsWritten. A targeted DELETE (free in
+   * R2, a no-op when the key is absent) replaces the prefix LIST that scanning
+   * for it used to cost — one Class A operation saved per chunk visit. Any
+   * stray shard past the cursor (a legacy multi-orphan state) is still swept by
+   * finalize's full pre-publish scan before it can reach the transform.
+   */
   private async deleteOrphanShards(
     manifest: SnapshotManifest,
     chunk: SnapshotChunk,
   ): Promise<void> {
-    const prefix = rawChunkShardPrefix(manifest.league, manifest.snapshotId, chunk.chunkIndex);
-    for (const key of await listKeys(this.deps.objectStore, prefix)) {
-      const match = /-(\d+)\.ndjson\.gz$/.exec(key);
-      if (match && Number(match[1]) >= chunk.shardsWritten) {
-        await this.deps.objectStore.delete(key);
-      }
-    }
+    await this.deps.objectStore.delete(
+      rawChunkShardPath(
+        manifest.league,
+        manifest.snapshotId,
+        chunk.chunkIndex,
+        chunk.shardsWritten,
+      ),
+    );
   }
 
   private summarize(
