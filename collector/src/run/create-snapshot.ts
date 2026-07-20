@@ -1,13 +1,19 @@
 /**
- * Create-snapshot step — its own workflow, whose cron IS the snapshot cadence
- * (the collect workflow only drains what this one seeds):
+ * New-snapshot step — its own workflow, whose cron IS the snapshot cadence
+ * (the collect workflow only drains what this one seeds; the build-roster
+ * workflow keeps the roster it seeds from fresh):
  *
  *  a) CLOSE the previous in-flight snapshot: uncollected characters are marked
  *     `skipped` and the snapshot publishes with what it has (close-snapshot.ts);
- *  b) CREATE the new snapshot: capture the ladder (one atomic pass), MERGE the
- *     entries into the per-league roster (the growing character database), then
- *     seed the snapshot queue from the ENTIRE roster as pending chunks — this
- *     is what lets snapshots grow past the ladder window over time.
+ *  b) CREATE the new snapshot: seed the snapshot queue from the ENTIRE current
+ *     roster (the growing character database that build-roster maintains), every
+ *     character entering as `pending`, split into worker-sized chunks — this is
+ *     what lets snapshots grow past the ladder window over time.
+ *
+ * This step is REQUEST-FREE: it never reads the GGG ladder. All ladder capture
+ * and roster merging lives in build-roster.ts; new-snapshot seeds from whatever
+ * roster that step last produced. An empty roster (build-roster has not run
+ * yet) is a clean skip — nothing is seeded until there are characters.
  *
  * Scheduled fires respect two guards, both bypassed by a dispatch fire (force):
  *  - snapshotIntervalHours since the previous snapshot began (or completed):
@@ -17,31 +23,21 @@
  * Runs alone in the shared `snapshot-collector` concurrency group, so a close
  * never overlaps a collect fire's workers (single writer per object, no locks).
  */
-import type { LadderEntry, LadderResult, LadderSource } from '../sources/types.js';
-import type { SnapshotManifest } from '@pou/shared';
+import type { RosterCharacter, SnapshotManifest } from '@pou/shared';
 import { SCHEMA_VERSION, chunkCountFor, emptyTally, isInFlight } from '@pou/shared';
 import type { Clock } from '../rate-limit/clock.js';
-import type { RateLimiter } from '../rate-limit/limiter.js';
-import { COORDINATOR_SLOT } from '../rate-limit/limiter-store.js';
-import { LimiterPersistence, type LimiterScope } from '../rate-limit/limiter-persistence.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
-import { RosterStore, mergeLadder } from '../roster/roster-store.js';
+import { RosterStore } from '../roster/roster-store.js';
 import { ChunkStore, planChunks } from '../chunks/chunk-store.js';
 import { HOUR_MS, type RunConfig } from './config.js';
-import type { WaitReporter } from './resolve-character.js';
 import type { Finalizer } from './finalize.js';
 import { closeInFlightSnapshot, type CloseSummary } from './close-snapshot.js';
 
 export interface CreatorDeps {
   clock: Clock;
-  ladderSource: LadderSource;
   checkpointStore: CheckpointStore;
   objectStore: ObjectStore;
-  limiter: RateLimiter;
-  /** This runner's public IP (discoverPublicIp) — scopes the restored pace
-   *  state via limiter.adoptIp; undefined keeps it (conservative). */
-  publicIp?: string | undefined;
   /** Finalizer for a league being closed (carries that league's tree version). */
   finalizerFor: (league: string) => Finalizer;
   /** Bypass the cadence guards (workflow_dispatch fires). */
@@ -51,22 +47,18 @@ export interface CreatorDeps {
   log?: (message: string) => void;
 }
 
-export type CreateStopReason =
-  'created' | 'too_recent' | 'cooldown' | 'aborted' | 'budget_exhausted';
+export type CreateStopReason = 'created' | 'too_recent' | 'cooldown' | 'empty_roster';
 
 export interface CreateSummary {
   stopReason: CreateStopReason;
   /** What closing the previous snapshot did (absent when nothing was in flight). */
   closed?: CloseSummary;
-  requests: number;
   rosterSize: number;
-  rosterAdded: number;
   totalCharacters: number;
   chunkCount: number;
 }
 
 export class SnapshotCreator {
-  private readonly limiterState: LimiterPersistence;
   private readonly rosters: RosterStore;
   private readonly chunks: ChunkStore;
 
@@ -74,29 +66,16 @@ export class SnapshotCreator {
     private readonly config: RunConfig,
     private readonly deps: CreatorDeps,
   ) {
-    this.limiterState = new LimiterPersistence(deps.objectStore);
     this.rosters = new RosterStore(deps.objectStore);
     this.chunks = new ChunkStore(deps.objectStore);
-  }
-
-  /** Client state under the coordinator slot; pace shared under the runner IP. */
-  private get limiterScope(): LimiterScope {
-    return { league: this.config.league, slot: COORDINATOR_SLOT, ip: this.deps.publicIp };
   }
 
   private log(message: string): void {
     this.deps.log?.(message);
   }
 
-  private readonly onWait: WaitReporter = (ms, reason) => {
-    if (ms >= 2000) this.log(`rate-limit: waiting ${(ms / 1000).toFixed(1)}s (${reason})`);
-  };
-
   async runOnce(): Promise<CreateSummary> {
     const runStart = this.deps.clock.now();
-    if (await this.limiterState.loadInto(this.deps.limiter, this.limiterScope)) {
-      this.log('rate-limit: runner IP changed since the checkpoint — pace windows start fresh');
-    }
 
     const inFlight = (await this.deps.checkpointStore.listAll()).filter((m) => isInFlight(m.phase));
     const target = await this.deps.checkpointStore.load(this.config.league);
@@ -134,9 +113,23 @@ export class SnapshotCreator {
       });
     }
 
-    // b) Create the new snapshot for the configured league.
+    // b) Seed the new snapshot from the current roster. An empty roster means
+    //    build-roster has not populated it yet — skip cleanly (leaving the just
+    //    closed snapshot as the newest) rather than churn an empty snapshot.
+    const roster = await this.rosters.load(this.config.league);
+    if (roster.characters.length === 0) {
+      this.log('create: roster is empty — nothing to seed yet');
+      const summary: CreateSummary = {
+        stopReason: 'empty_roster',
+        rosterSize: 0,
+        totalCharacters: 0,
+        chunkCount: 0,
+      };
+      return closed ? { ...summary, closed } : summary;
+    }
+
     const manifest = await this.begin();
-    const summary = await this.captureAndSeed(manifest, runStart);
+    const summary = await this.seedFromRoster(manifest, roster.characters);
     return closed ? { ...summary, closed } : summary;
   }
 
@@ -149,6 +142,8 @@ export class SnapshotCreator {
       league: this.config.league,
       depth: this.config.depth,
       phase: 'ladder_capture',
+      // The moment this snapshot began; anchors both the age hard-block and the
+      // interval guard. (No ladder is captured here — build-roster owns that.)
       ladderCapturedAt: new Date(now).toISOString(),
       chunkSize: this.config.chunkSize,
       chunkCount: 0,
@@ -160,38 +155,12 @@ export class SnapshotCreator {
     return manifest;
   }
 
-  /** Capture the ladder (atomic pass), merge the roster, seed pending chunks. */
-  private async captureAndSeed(
+  /** Seed the whole roster as pending chunks and move the manifest to collecting. */
+  private async seedFromRoster(
     manifest: SnapshotManifest,
-    runStart: number,
+    characters: readonly RosterCharacter[],
   ): Promise<CreateSummary> {
-    const captured = await this.captureLadder(manifest, runStart);
-    if (captured.kind !== 'ok') {
-      if (captured.kind === 'aborted') {
-        await this.deps.checkpointStore.save({
-          ...manifest,
-          phase: 'aborted',
-          abortedAt: this.nowIso(),
-        });
-        await this.saveLimiter();
-        return { ...this.idleSummary('aborted'), requests: captured.requests };
-      }
-      // Budget ran out mid-capture: the manifest stays in ladder_capture; the
-      // next create fire discards it and recaptures cleanly.
-      await this.saveLimiter();
-      return { ...this.idleSummary('budget_exhausted'), requests: captured.requests };
-    }
-
-    // Every ladder read appends what it saw to the per-league character
-    // database. New entrants grow the roster; the first capture seeds it.
-    const nowIso = this.nowIso();
-    const roster = await this.rosters.load(this.config.league);
-    const merged = mergeLadder(roster, captured.entries, nowIso);
-    await this.rosters.save(merged.roster);
-    this.log(
-      `roster: ${merged.roster.characters.length} characters ` +
-        `(+${merged.added} new, ${merged.refreshed} refreshed)`,
-    );
+    const total = characters.length;
 
     // The snapshot queue is the ENTIRE roster, every character entering as
     // `pending`, split into worker-sized chunks. Chunks are re-seeded wholesale
@@ -201,12 +170,11 @@ export class SnapshotCreator {
     const chunks = planChunks(
       this.config.league,
       manifest.snapshotId,
-      merged.roster.characters,
+      characters,
       this.config.chunkSize,
     );
     for (const chunk of chunks) await this.chunks.save(chunk);
 
-    const total = merged.roster.characters.length;
     const collecting: SnapshotManifest = {
       ...manifest,
       phase: 'collecting',
@@ -216,104 +184,30 @@ export class SnapshotCreator {
       resolvedChunks: 0,
     };
     await this.deps.checkpointStore.save(collecting);
-    await this.saveLimiter();
     this.log(
       `seed: snapshot=${collecting.snapshotId} characters=${total} ` +
         `chunks=${collecting.chunkCount} (size ${this.config.chunkSize})`,
     );
     return {
       stopReason: 'created',
-      requests: captured.requests,
-      rosterSize: merged.roster.characters.length,
-      rosterAdded: merged.added,
+      rosterSize: total,
       totalCharacters: total,
       chunkCount: collecting.chunkCount,
     };
   }
 
-  private async captureLadder(
-    manifest: SnapshotManifest,
-    runStart: number,
-  ): Promise<
-    | { kind: 'ok'; entries: LadderEntry[]; requests: number }
-    | { kind: 'aborted'; requests: number }
-    | { kind: 'budget'; requests: number }
-  > {
-    const entries: LadderEntry[] = [];
-    const { depth, ladderPageSize, league, maxAttempts, maxRunMillis } = this.config;
-    let requests = 0;
-
-    for (let offset = 0; offset < depth; offset += ladderPageSize) {
-      let page: Extract<LadderResult, { kind: 'ok' }> | undefined;
-      let attempts = 0;
-
-      // Retry the page until it succeeds, is exhausted, aborts, or budget ends.
-      while (page === undefined) {
-        if (this.deps.limiter.isAborted) return { kind: 'aborted', requests };
-        if (this.deps.clock.now() - runStart >= maxRunMillis) {
-          // Capture is one atomic pass; a partial ladder would skew the roster
-          // ranks, so restart cleanly next run.
-          return { kind: 'budget', requests };
-        }
-
-        const limit = Math.min(ladderPageSize, depth - offset);
-        await this.deps.limiter.acquire(this.onWait);
-        this.log(`ladder: fetching ${league} offset=${offset} limit=${limit}`);
-        const { result, observation } = await this.deps.ladderSource.fetchPage({
-          league,
-          offset,
-          limit,
-        });
-        this.deps.limiter.observe(observation);
-        requests += 1;
-
-        if (result.kind === 'ok') {
-          page = result;
-          this.log(
-            `ladder: got ${result.entries.length} entries at offset=${offset} (total=${result.total})`,
-          );
-          break;
-        }
-        this.log(`ladder: offset=${offset} not ok (${result.kind}); retrying`);
-        // Ladder is not per-profile: a fatal status is a misconfiguration.
-        if (result.kind === 'fatal') return { kind: 'aborted', requests };
-        // rate_limited / retryable (incl. malformed ladder): bounded retry. The
-        // limiter has already backed off; giving up after maxAttempts stops us
-        // hammering a persistently-failing page (hard rules #1/#4).
-        attempts += 1;
-        if (attempts >= maxAttempts) return { kind: 'aborted', requests };
-      }
-
-      entries.push(...page.entries);
-      if (page.entries.length === 0 || entries.length >= page.total) break;
-    }
-
-    this.log(`ladder: captured ${entries.length} characters for ${league} (depth ${depth})`);
-    return { kind: 'ok', entries, requests };
-  }
-
   private idleSummary(stopReason: CreateStopReason, target?: SnapshotManifest | undefined) {
     return {
       stopReason,
-      requests: 0,
       rosterSize: target?.totalCharacters ?? 0,
-      rosterAdded: 0,
       totalCharacters: target?.totalCharacters ?? 0,
       chunkCount: target?.chunkCount ?? 0,
     };
   }
 
-  private async saveLimiter(): Promise<void> {
-    await this.limiterState.save(this.deps.limiter, this.limiterScope, this.nowIso());
-  }
-
   private within(iso: string | undefined, now: number, hours: number): boolean {
     if (iso === undefined) return false;
     return now - Date.parse(iso) < hours * HOUR_MS;
-  }
-
-  private nowIso(): string {
-    return new Date(this.deps.clock.now()).toISOString();
   }
 }
 

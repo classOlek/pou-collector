@@ -1,13 +1,16 @@
 #!/usr/bin/env tsx
 /**
- * Collector CLI. One entry point, five subcommands matching the two workflows'
+ * Collector CLI. One entry point, six subcommands matching the three workflows'
  * jobs, wired from the environment and the checked-in config files:
  *
- *   create-snapshot — the create workflow (its cron IS the snapshot cadence):
- *                close the previous in-flight snapshot (uncollected characters
- *                marked `skipped`, snapshot published with what it has), then
- *                capture the ladder, merge it into the per-league roster and
- *                seed the new snapshot's pending chunks.
+ *   build-roster — the build-roster workflow (frequent cron): one atomic ladder
+ *                capture merged into the per-league roster (the growing
+ *                character database). The ONLY step that reads the GGG ladder.
+ *   create-snapshot — the new-snapshot workflow (its cron IS the snapshot
+ *                cadence): close the previous in-flight snapshot (uncollected
+ *                characters marked `skipped`, snapshot published with what it
+ *                has), then seed the new snapshot's pending chunks from the
+ *                CURRENT roster. Request-free — no ladder capture here.
  *                COLLECTOR_RESET_ABORTED=true clears aborted checkpoints first;
  *                COLLECTOR_FORCE_CREATE=true (dispatch) bypasses cadence guards.
  *   coordinate — the collect workflow's request-free check: report whether the
@@ -40,6 +43,7 @@ import { createFetchHttpClient } from './http/fetch-client.js';
 import { discoverPublicIp } from './http/public-ip.js';
 import { LegacyCharacterSource, LegacyLadderSource } from './sources/legacy.js';
 import { Coordinator } from './run/coordinator.js';
+import { RosterBuilder } from './run/build-roster.js';
 import { SnapshotCreator } from './run/create-snapshot.js';
 import { Worker } from './run/worker.js';
 import { Finalizer } from './run/finalize.js';
@@ -48,10 +52,12 @@ import { HttpTreeOrigin } from './transform/tree-origin.js';
 import { runRetention } from './retention/retention.js';
 import { resetAbortedCheckpoints, shouldResetAborted } from './reset-aborted.js';
 import {
+  buildExitCode,
   coordinateExitCode,
   createExitCode,
   emitSummary,
   finalizeExitCode,
+  renderBuildSummary,
   renderCoordinateSummary,
   renderCreateSummary,
   renderFinalizeSummary,
@@ -105,22 +111,36 @@ function makeFinalizerFactory(
     );
 }
 
-async function createSnapshot(config: CollectorConfig, store: ObjectStore): Promise<number> {
+async function buildRoster(config: CollectorConfig, store: ObjectStore): Promise<number> {
   const userAgent = buildUserAgent();
   const http = createFetchHttpClient();
+  const limiter = new RateLimiter(systemClock, DEFAULT_LIMITER_CONFIG);
+  const builder = new RosterBuilder(config, {
+    clock: systemClock,
+    ladderSource: new LegacyLadderSource(http, { userAgent }),
+    objectStore: store,
+    limiter,
+    publicIp: await discoverPublicIp(),
+    log: (message) => console.log(`[build] ${message}`),
+  });
+
+  const summary = await builder.runOnce();
+  emitSummary(renderBuildSummary(summary, limiter.toMemory()));
+  return buildExitCode(summary);
+}
+
+async function createSnapshot(config: CollectorConfig, store: ObjectStore): Promise<number> {
   const checkpointStore = new CheckpointStore(store);
   if (shouldResetAborted(process.env['COLLECTOR_RESET_ABORTED'])) {
     const cleared = await resetAbortedCheckpoints(checkpointStore);
     console.log(JSON.stringify({ kind: 'reset_aborted', cleared }));
   }
-  const limiter = new RateLimiter(systemClock, DEFAULT_LIMITER_CONFIG);
+  // Request-free: seeds from the roster build-roster maintains — no GGG access,
+  // no rate limiter, no public-IP discovery.
   const creator = new SnapshotCreator(config, {
     clock: systemClock,
-    ladderSource: new LegacyLadderSource(http, { userAgent }),
     checkpointStore,
     objectStore: store,
-    limiter,
-    publicIp: await discoverPublicIp(),
     finalizerFor: makeFinalizerFactory(config, store, checkpointStore),
     // Dispatch fires bypass the cadence guards; scheduled fires respect them.
     force: process.env['COLLECTOR_FORCE_CREATE'] === 'true',
@@ -128,8 +148,8 @@ async function createSnapshot(config: CollectorConfig, store: ObjectStore): Prom
   });
 
   const summary = await creator.runOnce();
-  emitSummary(renderCreateSummary(summary, limiter.toMemory()));
-  return createExitCode(summary);
+  emitSummary(renderCreateSummary(summary));
+  return createExitCode();
 }
 
 async function coordinate(config: CollectorConfig, store: ObjectStore): Promise<number> {
@@ -224,6 +244,7 @@ async function retention(config: CollectorConfig, store: ObjectStore): Promise<n
 }
 
 const HANDLERS: Record<string, (cfg: CollectorConfig, store: ObjectStore) => Promise<number>> = {
+  'build-roster': buildRoster,
   'create-snapshot': createSnapshot,
   coordinate,
   work,

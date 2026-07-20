@@ -4,7 +4,7 @@
  * The pace windows mirror GGG's per-IP request counters, so the recent-acquire
  * spend is keyed by runner IP here rather than by worker slot (limiter-store.ts,
  * which keeps the client-scoped penalty/streaks/rules). Any slot that lands on
- * an IP — across fires, and across the coordinator / worker / create-snapshot
+ * an IP — across fires, and across the coordinator / worker / build-roster
  * steps — reads the same file, so a reused IP can no longer be double-spent by a
  * different slot that had no memory of the first one's requests.
  *

@@ -13,7 +13,7 @@ name: UPDATE collect snapshot
 #
 #   coordinate — request-free check of the newest snapshot's manifest; reports
 #                has_work + the worker matrix. Never captures the ladder and
-#                never creates/closes snapshots (create-snapshot.yml does).
+#                never creates/closes snapshots (new-snapshot.yml does).
 #   work       — N parallel jobs, each on its own runner/IP with its own rate
 #                limiter. A worker only touches the chunks it owns
 #                (chunkIndex % workerCount == workerIndex — disjoint by
@@ -23,7 +23,7 @@ name: UPDATE collect snapshot
 #                while chunks remain, the final immutable snapshot once the
 #                queue drains naturally. Then retention.
 #
-# A single concurrency group (shared with create-snapshot.yml) serializes whole
+# A single concurrency group (shared with new-snapshot.yml) serializes whole
 # fires, so coordinate/finalize never overlap a previous fire's jobs, closes
 # never overlap workers, and the R2 state needs no locking.
 on:

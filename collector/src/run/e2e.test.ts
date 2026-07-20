@@ -1,7 +1,7 @@
 /**
- * End-to-end lifecycle across both workflows, across multiple simulated fires:
+ * End-to-end lifecycle across the workflows, across multiple simulated fires:
  *
- *   create-snapshot (capture → roster → seed chunks)
+ *   build-roster (ladder capture → roster) → new-snapshot (seed chunks)
  *     → collect fires: coordinate (fan-out check)
  *         → workers (parallel disjoint chunk resolution)
  *           → finalize (incremental publish while incomplete)
@@ -32,7 +32,7 @@ describe('create → collect fires (workers → finalize) → published → idle
       config: { chunkSize: 5, workerCount: 2, maxRunMillis: 25_000 },
     });
 
-    // The create workflow seeds the snapshot; collect fires then drain it.
+    // Build the roster, then seed the snapshot from it; collect fires drain it.
     const created = await h.createFire();
     expect(created.stopReason).toBe('created');
 
