@@ -6,7 +6,7 @@
  * Ownership discipline (no locking anywhere):
  *  - the coordinator writes all chunk files ONCE at seed time;
  *  - during a workflow run, each pending chunk is owned by exactly one worker
- *    (workers partition the pending list disjointly — see assignedChunkIndices);
+ *    (workers partition the index space disjointly — see ownedChunkIndices);
  *  - finalize only reads chunks (and deletes them when the snapshot leaves the
  *    in-flight phases).
  * Workflow-level concurrency serializes runs, so these phases never overlap.
@@ -65,6 +65,24 @@ export function assignedChunkIndices(
   return pendingIndices.filter((chunkIndex) => chunkIndex % workerCount === workerIndex);
 }
 
+/**
+ * The chunk indices a worker slot owns, derived purely from the chunk count:
+ * every index where `chunkIndex % workerCount === workerIndex`, ascending. A
+ * worker enumerates these WITHOUT reading anything (the manifest carries
+ * chunkCount) and then loads only these chunks — not the whole snapshot. Same
+ * disjoint ownership as `assignedChunkIndices`, but the per-worker read count
+ * scales with a slot's own share of the queue instead of its total size.
+ */
+export function ownedChunkIndices(
+  chunkCount: number,
+  workerIndex: number,
+  workerCount: number,
+): number[] {
+  const indices: number[] = [];
+  for (let i = workerIndex; i < chunkCount; i += workerCount) indices.push(i);
+  return indices;
+}
+
 /** Indices of chunks that still contain not-yet-computed characters. */
 export function pendingChunkIndices(chunks: readonly SnapshotChunk[]): number[] {
   return chunks.filter((c) => !isChunkResolved(c)).map((c) => c.chunkIndex);
@@ -85,8 +103,17 @@ export class ChunkStore {
 
   /** Load every chunk of a snapshot, ordered by chunk index. */
   async loadAll(league: string, snapshotId: string, chunkCount: number): Promise<SnapshotChunk[]> {
+    return this.loadMany(league, snapshotId, ownedChunkIndices(chunkCount, 0, 1));
+  }
+
+  /** Load a specific set of chunk indices, in the order given. */
+  async loadMany(
+    league: string,
+    snapshotId: string,
+    indices: readonly number[],
+  ): Promise<SnapshotChunk[]> {
     const chunks: SnapshotChunk[] = [];
-    for (let i = 0; i < chunkCount; i += 1) chunks.push(await this.load(league, snapshotId, i));
+    for (const i of indices) chunks.push(await this.load(league, snapshotId, i));
     return chunks;
   }
 

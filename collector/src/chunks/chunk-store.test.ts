@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import type { RosterCharacter } from '@pou/shared';
 import { chunkPath } from '@pou/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
-import { ChunkStore, pendingChunkIndices, planChunks } from './chunk-store.js';
+import { ChunkStore, ownedChunkIndices, pendingChunkIndices, planChunks } from './chunk-store.js';
 
 function roster(n: number): RosterCharacter[] {
   return Array.from({ length: n }, (_, i) => ({
@@ -29,6 +29,23 @@ describe('planChunks', () => {
 
   it('plans no chunks for an empty roster', () => {
     expect(planChunks('Std', 's1', [], 5)).toEqual([]);
+  });
+});
+
+describe('ownedChunkIndices', () => {
+  it('partitions the index space disjointly and completely across workers', () => {
+    const w0 = ownedChunkIndices(10, 0, 3);
+    const w1 = ownedChunkIndices(10, 1, 3);
+    const w2 = ownedChunkIndices(10, 2, 3);
+    expect(w0).toEqual([0, 3, 6, 9]);
+    expect(w1).toEqual([1, 4, 7]);
+    expect(w2).toEqual([2, 5, 8]);
+    expect([...w0, ...w1, ...w2].sort((a, b) => a - b)).toEqual([...Array(10).keys()]);
+  });
+
+  it('is empty when a slot owns nothing (fewer chunks than workers)', () => {
+    expect(ownedChunkIndices(2, 5, 15)).toEqual([]);
+    expect(ownedChunkIndices(0, 0, 15)).toEqual([]);
   });
 });
 

@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { rawChunkShardPrefix } from '@pou/shared';
+import { gzipSync } from 'node:zlib';
+import { chunkPath, isChunkResolved, rawChunkShardPath, rawChunkShardPrefix } from '@pou/shared';
 import { getJson, putJson } from '../checkpoint/object-store.js';
 import { ChunkStore, assignedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
 import { LimiterStateStore, workerSlot } from '../rate-limit/limiter-store.js';
@@ -53,6 +54,52 @@ describe('Worker chunk processing', () => {
     // Every ok character was fetched exactly once, by exactly one worker.
     expect((await readAllShards(h.objectStore)).length).toBe(tally.ok);
     expect(h.api.itemCalls.get('acct-1/char-1')).toBe(1);
+  });
+
+  it('reads only its own chunks — a sibling-owned chunk being unreadable is irrelevant', async () => {
+    const entries = buildLadder(20);
+    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
+    await h.createFire();
+
+    // w0 owns {0, 2}, w1 owns {1, 3}. Remove a w1-owned chunk file: a worker
+    // that loaded the whole snapshot (loadAll) would throw on the missing
+    // chunk; loading only what it owns, w0 never touches chunk 1.
+    await h.objectStore.delete(chunkPath(LEAGUE, 'snap-fixed', 1));
+
+    const w0 = await h.newWorker(0).runOnce();
+    expect(w0.stopReason).toBe('assigned_drained');
+    expect(w0.assignedChunks).toBe(2);
+
+    const store = new ChunkStore(h.objectStore);
+    expect(isChunkResolved(await store.load(LEAGUE, 'snap-fixed', 0))).toBe(true);
+    expect(isChunkResolved(await store.load(LEAGUE, 'snap-fixed', 2))).toBe(true);
+  });
+
+  it('clears an orphan shard at the cursor before writing (targeted delete, no LIST)', async () => {
+    const entries = Array.from({ length: 3 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
+    await h.createFire();
+
+    // Simulate a crash that wrote a shard at seq == shardsWritten (0) but never
+    // checkpointed the chunk — an orphan the next visit must discard so the
+    // rollup and raw agree. shardsWritten stays 0, so the real shard lands on
+    // the same key and must overwrite the stale one, not sit beside it.
+    const shardKey = rawChunkShardPath(LEAGUE, 'snap-fixed', 0, 0);
+    await h.objectStore.put(shardKey, gzipSync(Buffer.from('{"stale":true}\n', 'utf8')));
+
+    const summary = await h.newWorker(0).runOnce();
+    expect(summary.stopReason).toBe('assigned_drained');
+
+    const shardKeys = h.objectStore
+      .keys()
+      .filter((k) => k.startsWith(rawChunkShardPrefix(LEAGUE, 'snap-fixed', 0)));
+    expect(shardKeys).toEqual([shardKey]);
+    const records = await readAllShards(h.objectStore);
+    expect(records.some((r) => (r as { stale?: unknown }).stale === true)).toBe(false);
+    expect(records).toHaveLength(3);
+    expect((await new ChunkStore(h.objectStore).load(LEAGUE, 'snap-fixed', 0)).shardsWritten).toBe(
+      1,
+    );
   });
 
   it('checkpoints mid-chunk on budget exhaustion and resumes without re-fetching', async () => {
