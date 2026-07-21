@@ -283,6 +283,7 @@ describe('renderRetentionSummary', () => {
         worker: 100,
         ip: 50,
         index: 128,
+        economy: 0,
         other: 0,
       },
       totalBytes: 5 * 1024 * 1024 + 3284,

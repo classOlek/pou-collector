@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 /**
- * Collector CLI. One entry point, seven subcommands matching the three
- * workflows' jobs, wired from the environment and the checked-in config files:
+ * Collector CLI. One entry point, one subcommand per workflow job, wired from
+ * the environment and the checked-in config files:
  *
  *   build-roster — the build-roster workflow (every 30 min): one atomic ladder
  *                capture merged into the per-league roster (the growing
@@ -29,6 +29,11 @@
  *                an incomplete snapshot (or the final immutable snapshot once
  *                every chunk resolved), then run retention.
  *   retention  — usage accounting, orphaned-raw sweep, trim oldest detail.
+ *   economy    — the ECONOMY POE.NINJA workflow (hourly): cache every
+ *                documented poe.ninja poe1 economy category into one file per
+ *                league at economy/<league>.json. Talks to poe.ninja only —
+ *                never GGG — and needs no collector config beyond the contact
+ *                email for the User-Agent.
  *
  * All GGG/R2 access is injected (systemClock, real-fetch HttpClient, S3
  * ObjectStore from R2_* env). The contact email is required (hard rule #1):
@@ -54,16 +59,19 @@ import { Finalizer } from './run/finalize.js';
 import { CachedTreeSource } from './transform/tree-source.js';
 import { HttpTreeOrigin } from './transform/tree-origin.js';
 import { runRetention } from './retention/retention.js';
+import { EconomyCollector } from './economy/poe-ninja.js';
 import { resetAbortedCheckpoints, shouldResetAborted } from './reset-aborted.js';
 import {
   buildExitCode,
   coordinateExitCode,
   createExitCode,
+  economyExitCode,
   emitSummary,
   finalizeExitCode,
   renderBuildSummary,
   renderCoordinateSummary,
   renderCreateSummary,
+  renderEconomySummary,
   renderFinalizeSummary,
   renderRetentionSummary,
   renderSnapshotIdleSummary,
@@ -267,6 +275,22 @@ async function retention(config: CollectorConfig, store: ObjectStore): Promise<n
   return 0;
 }
 
+async function economy(_config: CollectorConfig, store: ObjectStore): Promise<number> {
+  const collector = new EconomyCollector(
+    { userAgent: buildUserAgent() },
+    {
+      clock: systemClock,
+      http: createFetchHttpClient(),
+      objectStore: store,
+      log: (message) => console.log(`[economy] ${message}`),
+    },
+  );
+
+  const summary = await collector.runOnce();
+  emitSummary(renderEconomySummary(summary));
+  return economyExitCode(summary);
+}
+
 const HANDLERS: Record<string, (cfg: CollectorConfig, store: ObjectStore) => Promise<number>> = {
   'build-roster': buildRoster,
   'create-snapshot': createSnapshot,
@@ -275,6 +299,7 @@ const HANDLERS: Record<string, (cfg: CollectorConfig, store: ObjectStore) => Pro
   work,
   finalize,
   retention,
+  economy,
 };
 
 async function main(): Promise<number> {

@@ -1,0 +1,103 @@
+name: ECONOMY POE.NINJA
+
+# Caches poe.ninja's documented poe1 economy overviews: every accepted `type`
+# of the three public endpoints (exchange / stash item / stash currency — see
+# https://poe.ninja/docs/api), for each configured league, into ONE file per
+# league at economy/<league>.json in R2. The file is a cache overwritten in
+# place each fire (all-or-nothing per league: a partial pass keeps the last
+# good file and fails the run so the alert job fires).
+#
+# The league list is hardcoded for this iteration
+# (collector/src/economy/poe-ninja.ts ECONOMY_LEAGUES); a later iteration
+# derives it from /poe1/api/economy/leagues.
+#
+# Cadence: hourly. poe.ninja refreshes poe1 overviews roughly every 15 minutes
+# and HTTP-caches responses ~5 minutes, and their guidelines ask for reasonable
+# volume — hourly (~86 sequential requests per fire, with a politeness gap) is
+# well inside that. GitHub delivers `schedule` best-effort; for a cache of
+# slow-moving data an occasionally late fire is fine, so no external
+# dispatcher is needed here. The minute sits off the congested :00/:30 slots.
+#
+# Its own concurrency group: the run writes ONLY economy/<league>.json, which
+# no other workflow touches (retention deletes only raw/chunk/detail keys), so
+# it never shares an R2 object with the snapshot pipeline.
+on:
+  schedule:
+    - cron: '52 * * * *'
+  workflow_dispatch: {}
+
+concurrency:
+  group: economy-poe-ninja
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+  R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+  R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+  R2_BUCKET: ${{ secrets.R2_BUCKET }}
+  # Identifiable User-Agent with a reachable contact address (poe.ninja asks
+  # for a descriptive UA identifying the app and a contact — same discipline
+  # as hard rule #1). The collector throws without it.
+  COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
+
+jobs:
+  cache:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # Fetch every category for every league sequentially and publish one
+      # economy file per league. Exits nonzero when any league's pass was
+      # incomplete (that league's previous file is kept untouched).
+      - name: Cache economy
+        run: pnpm --filter @pou/collector run economy
+
+  # Failure alerting: open or update the single pinned issue when the cache
+  # step failed, deduped by a stable title + label (same pattern as the
+  # collect/roster workflows, but its own title so economy failures never
+  # mingle with collector failures).
+  alert:
+    needs: [cache]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Alert on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Economy poe.ninja cache run failed"
+          LABEL="collector-alert"
+          gh label create "$LABEL" --repo "${{ github.repository }}" --color B60205 --description "Snapshot collector failures" 2>/dev/null || true
+          BODY="An ECONOMY POE.NINJA fire failed (a league's category pass was incomplete; its last good economy file was kept).
+
+          - Run: $RUN_URL
+          - Commit: ${{ github.sha }}
+          - When: $(date -u +%FT%TZ)
+
+          Check the run's job summary for the failed categories and reasons."
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --label "$LABEL" --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --label "$LABEL" --body "$BODY"
+          fi

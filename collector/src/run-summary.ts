@@ -16,6 +16,7 @@ import type { WorkerSummary } from './run/worker.js';
 import type { FinalizeSummary } from './run/finalize.js';
 import type { TransformSummary } from './transform/transform.js';
 import type { RetentionSummary } from './retention/retention.js';
+import type { EconomySummary } from './economy/poe-ninja.js';
 
 /**
  * The coordinate→worker hand-off contract, in one place. snapshot.yml fans the
@@ -64,6 +65,15 @@ export function createExitCode(): number {
  */
 export function finalizeExitCode(summary: FinalizeSummary): number {
   return summary.stopReason === 'aborted' ? 1 : 0;
+}
+
+/**
+ * Exit policy for the ECONOMY POE.NINJA step: fail when any league's pass fell
+ * short of a complete snapshot (its file is all-or-nothing, so the last good
+ * cache was kept) — the alert job surfaces it and the next fire retries.
+ */
+export function economyExitCode(summary: EconomySummary): number {
+  return summary.leagues.every((league) => league.written) ? 0 : 1;
 }
 
 export interface RenderedSummary {
@@ -392,6 +402,35 @@ function renderTransformBlock(summary: TransformSummary): string {
     '#### Aggregate rows',
     table(Object.keys(summary.aggregateRows), [Object.values(summary.aggregateRows)]),
   ].join('\n');
+}
+
+export function renderEconomySummary(summary: EconomySummary): RenderedSummary {
+  const rows = summary.leagues.map((league) => [
+    league.league,
+    league.categoriesFetched,
+    league.failures.length,
+    league.written ? 'written' : 'kept last good file',
+  ]);
+  const blocks = [
+    '## Economy poe.ninja cache',
+    '',
+    table(['league', 'categories fetched', 'failures', 'economy file'], rows),
+    '',
+    `_${summary.requestCount} requests this pass._`,
+  ];
+  const failures = summary.leagues.flatMap((league) =>
+    league.failures.map((f) => `- ${league.league}: ${f.endpoint}/${f.type} — ${f.reason}`),
+  );
+  if (failures.length > 0) blocks.push('', '### Failed categories', ...failures);
+
+  return {
+    markdown: blocks.join('\n'),
+    outputs: {
+      leagues_written: String(summary.leagues.filter((l) => l.written).length),
+      leagues_failed: String(summary.leagues.filter((l) => !l.written).length),
+    },
+    json: { kind: 'economy', ...summary },
+  };
 }
 
 const MB = 1024 * 1024;

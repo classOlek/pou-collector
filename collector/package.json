@@ -15,7 +15,8 @@
     "coordinate": "tsx src/main.ts coordinate",
     "work": "tsx src/main.ts work",
     "finalize": "tsx src/main.ts finalize",
-    "retention": "tsx src/main.ts retention"
+    "retention": "tsx src/main.ts retention",
+    "economy": "tsx src/main.ts economy"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.665.0",

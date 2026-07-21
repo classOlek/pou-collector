@@ -12,6 +12,15 @@ export const STATE_PREFIX = 'state/';
 export const TREE_PREFIX = 'state/tree/';
 export const RAW_PREFIX = 'raw/';
 export const SNAPSHOTS_PREFIX = 'snapshots/';
+export const ECONOMY_PREFIX = 'economy/';
+
+/**
+ * The poe.ninja economy cache for one league (public): ONE file per league,
+ * overwritten in place by each ECONOMY POE.NINJA fire (see economy.ts).
+ */
+export function economyPath(league: string): string {
+  return `${ECONOMY_PREFIX}${encodeURIComponent(league)}.json`;
+}
 
 export function checkpointPath(league: string): string {
   return `${STATE_PREFIX}${encodeURIComponent(league)}/current.json`;
@@ -118,6 +127,7 @@ export type KeyCategory =
   | 'worker'
   | 'ip'
   | 'index'
+  | 'economy'
   | 'other';
 
 /** A snapshot's league + id, recovered from a key (league is URI-decoded). */
@@ -158,6 +168,7 @@ export function parseChunkKey(key: string): SnapshotRef | undefined {
 
 export function classifyKey(key: string): KeyCategory {
   if (key === INDEX_PATH) return 'index';
+  if (key.startsWith(ECONOMY_PREFIX)) return 'economy';
   if (key.startsWith(RAW_PREFIX)) return 'raw';
   if (key.startsWith(TREE_PREFIX)) return 'tree';
   if (/^state\/[^/]+\/roster\.json$/.test(key)) return 'roster';

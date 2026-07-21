@@ -12,7 +12,7 @@ to an S3-compatible object store (Cloudflare R2). Runs on free tiers
 ## Layout
 
 ```
-├── .github/workflows/   # ci, build-roster (roster + trigger-snapshot), new-snapshot (idle-gated seed), snapshot (collect), claude-diagnostics
+├── .github/workflows/   # ci, build-roster (roster + trigger-snapshot), new-snapshot (idle-gated seed), snapshot (collect), economy-poe-ninja (hourly poe.ninja cache), claude-diagnostics
 ├── collector/           # TypeScript: coordinate / work / finalize + transform
 ├── scheduler/           # Cloudflare Worker cron — the REAL cadence (GH `schedule` is a lossy backstop); see scheduler/README.md
 ├── shared/              # data contracts (SCHEMA_VERSION, R2 key layout, schema)

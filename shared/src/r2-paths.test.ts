@@ -4,6 +4,7 @@ import {
   chunkPath,
   chunkPrefix,
   classifyKey,
+  economyPath,
   ipPacePath,
   ipPacePrefix,
   parseChunkKey,
@@ -74,6 +75,11 @@ describe('r2 paths', () => {
     expect(treeCachePath('3.25.1')).toBe('state/tree/3.25.1.json');
   });
 
+  it('keys the poe.ninja economy cache flat per league under economy/', () => {
+    expect(economyPath('Standard')).toBe('economy/Standard.json');
+    expect(economyPath('Settlers of Kalguur')).toBe('economy/Settlers%20of%20Kalguur.json');
+  });
+
   it('classifies every key category (the single source of layout truth)', () => {
     expect(classifyKey('index.json')).toBe('index');
     expect(classifyKey(rawChunkShardPath('Std', 's1', 0, 0))).toBe('raw');
@@ -86,6 +92,7 @@ describe('r2 paths', () => {
     expect(classifyKey(chunkPath('Std', 's1', 3))).toBe('chunk');
     expect(classifyKey(workerStatePath('Std', 'w0'))).toBe('worker');
     expect(classifyKey(ipPacePath('Std', '203.0.113.7'))).toBe('ip');
+    expect(classifyKey(economyPath('Std'))).toBe('economy');
     expect(classifyKey('something/else')).toBe('other');
   });
 
