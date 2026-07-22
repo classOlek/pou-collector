@@ -18,14 +18,13 @@ to an S3-compatible object store (Cloudflare R2). Runs on free tiers
 └── config/              # collector.json + leagues.json (league → tree version)
 ```
 
-Scheduling model: the REAL cadence is a Cloudflare Worker cron that now lives in
-its own repo, [classOlek/olsCloud-scheduler](https://github.com/classOlek/olsCloud-scheduler)
-(the GH `schedule` crons in `.github/workflows/` are a lossy backstop). That
-Worker dispatches build-roster at :00/:30 (never skipped) and collect every
-10 min, skipping collect ticks while roster/new-snapshot runs are active (GitHub
-has no run priority; the dispatcher enforces it). Snapshots are back-to-back:
-build-roster triggers new-snapshot when no snapshot is live — there is no
-wall-clock snapshot cadence.
+Scheduling model: the REAL cadence is an external cron scheduler that lives in a
+separate repo (the GH `schedule` crons in `.github/workflows/` are a lossy
+backstop). It dispatches build-roster at :00/:30 (never skipped) and collect
+every 10 min, skipping collect ticks while roster/new-snapshot runs are active
+(GitHub has no run priority; the dispatcher enforces it). Snapshots are
+back-to-back: build-roster triggers new-snapshot when no snapshot is live —
+there is no wall-clock snapshot cadence.
 
 `shared/` is the schema contract. It is a **copy** kept in sync with a separate
 consumer (the web reader) by hand — a change here is a schema change: bump
@@ -58,6 +57,19 @@ consumer (the web reader) by hand — a change here is a schema change: bump
   (checkpoint/resume/abort), rate limiter (header parsing, backoff), transform
   SQL (golden-file inputs → expected Parquet/aggregates).
 - Commits: imperative mood, scope prefix when useful (`collector:`, `docs:`).
+
+## Local development
+
+```bash
+pnpm install
+pnpm typecheck && pnpm lint && pnpm format && pnpm test
+```
+
+The collector talks to R2 and GGG only in CI; unit tests use in-memory stores
+and recorded fixtures, so the suite runs offline. Runtime secrets are read from
+the environment (never committed) — see `.github/workflows/snapshot.yml` for the
+full list. At minimum the collector needs the `R2_*` object-store credentials
+and `COLLECTOR_CONTACT_EMAIL`.
 
 ## Diagnostics (for agents)
 

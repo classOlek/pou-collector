@@ -127,6 +127,12 @@ describe('resolveEnv', () => {
       /SUPABASE_SERVICE_ROLE_KEY/,
     );
   });
+
+  it('throws when neither SUPABASE_URL nor SUPABASE_PROJECT_REF is set', () => {
+    expect(() =>
+      resolveEnv({ SUPABASE_SERVICE_ROLE_KEY: 'k', COLLECTOR_CONTACT_EMAIL: 'e@x.io' }),
+    ).toThrow(/SUPABASE_URL or SUPABASE_PROJECT_REF/);
+  });
 });
 
 describe('userAgent', () => {

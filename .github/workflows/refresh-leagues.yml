@@ -2,16 +2,16 @@ name: REFRESH leagues
 
 # Refreshes the Path of Exile "main" leagues cache in Supabase. Fetches
 # https://api.pathofexile.com/leagues?type=main&realm=pc and POSTs the array to
-# the public.upsert_leagues(payload jsonb) RPC in classOlek/olsCloud-supabase,
-# which owns the flatten/reshape/upsert transform. This is the external
-# replacement for that project's former in-database pipeline (pg_cron + pg_net).
+# the public.upsert_leagues(payload jsonb) RPC in the Supabase project, which
+# owns the flatten/reshape/upsert transform. This is the external replacement
+# for that project's former in-database pipeline (pg_cron + pg_net).
 #
 # The job's only Supabase contact is one URL (/rest/v1/rpc/upsert_leagues); it
 # needs no database connection and no R2 credentials — hence its own package
 # (@pou/leagues), disjoint from the collector.
 on:
-  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
-  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # Scheduled cron disabled: cadence is driven by an external cron scheduler,
+  # which dispatches this workflow. The GH cron is
   # kept here (commented) only as a degraded-mode backstop record — an
   # off-peak minute, hourly (the leagues list moves slowly).
   # schedule:
@@ -28,9 +28,12 @@ permissions:
   issues: write
 
 env:
-  # Base Supabase URL. Not sensitive; the script defaults to the project ref if
-  # this is unset.
+  # Base Supabase URL (public, not a secret) — supplied via a repo variable so
+  # the target project is not hardcoded in this public repo. Required: the
+  # refresh throws if neither SUPABASE_URL nor SUPABASE_PROJECT_REF is set.
   SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+  # Alternative to SUPABASE_URL: just the project ref, also from a repo variable.
+  SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
   # The only credential. service_role bypasses RLS and is the sole role granted
   # execute on upsert_leagues (revoked from public/anon/authenticated).
   SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
