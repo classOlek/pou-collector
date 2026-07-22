@@ -11,9 +11,17 @@ S3-compatible object store (Cloudflare R2). Runs entirely on free tiers
 
 ```
 ├── collector/   # TypeScript: coordinate / work / finalize + DuckDB transform
+├── leagues/     # refresh the PoE leagues cache in Supabase (upsert_leagues RPC)
 ├── shared/      # data contracts (schema version, R2 key layout, table schema)
 └── config/      # collector.json (league, depth, budgets, cadence)
 ```
+
+The `leagues/` package (`@pou/leagues`) is independent of the collector: the
+`refresh-leagues` workflow fetches the PoE leagues API and POSTs it to the
+`upsert_leagues` RPC in
+[classOlek/olsCloud-supabase](https://github.com/classOlek/olsCloud-supabase).
+Its only Supabase contact is that one URL — it touches neither R2 nor a
+database connection.
 
 The Cloudflare Worker cron that dispatches these workflows now lives in its own
 repo: [classOlek/olsCloud-scheduler](https://github.com/classOlek/olsCloud-scheduler).

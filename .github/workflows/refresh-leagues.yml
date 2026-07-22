@@ -1,0 +1,93 @@
+name: REFRESH leagues
+
+# Refreshes the Path of Exile "main" leagues cache in Supabase. Fetches
+# https://api.pathofexile.com/leagues?type=main&realm=pc and POSTs the array to
+# the public.upsert_leagues(payload jsonb) RPC in classOlek/olsCloud-supabase,
+# which owns the flatten/reshape/upsert transform. This is the external
+# replacement for that project's former in-database pipeline (pg_cron + pg_net).
+#
+# The job's only Supabase contact is one URL (/rest/v1/rpc/upsert_leagues); it
+# needs no database connection and no R2 credentials — hence its own package
+# (@pou/leagues), disjoint from the collector.
+on:
+  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
+  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # kept here (commented) only as a degraded-mode backstop record — an
+  # off-peak minute, hourly (the leagues list moves slowly).
+  # schedule:
+  #   - cron: '37 * * * *'
+  workflow_dispatch: {}
+
+# One refresh at a time; queue rather than overlap (upserts are idempotent).
+concurrency:
+  group: refresh-leagues
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  # Base Supabase URL. Not sensitive; the script defaults to the project ref if
+  # this is unset.
+  SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+  # The only credential. service_role bypasses RLS and is the sole role granted
+  # execute on upsert_leagues (revoked from public/anon/authenticated).
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
+  # Identifiable User-Agent contact address (hard rule #1). The refresh throws
+  # without it — a misconfigured run fails loudly.
+  COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Fetch PoE leagues and upsert into Supabase
+        run: pnpm --filter @pou/leagues run refresh
+
+  # Failure alerting: open or update a single pinned issue when the refresh
+  # failed, deduped by a stable title + label (same pattern as the economy and
+  # collector workflows, but its own title so leagues failures stay separate).
+  alert:
+    needs: [refresh]
+    if: always() && contains(needs.*.result, 'failure')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Alert on failure
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          TITLE="Leagues refresh run failed"
+          LABEL="collector-alert"
+          gh label create "$LABEL" --repo "${{ github.repository }}" --color B60205 --description "Snapshot collector failures" 2>/dev/null || true
+          BODY="A REFRESH leagues fire failed (the PoE fetch or the upsert_leagues RPC did not complete).
+
+          - Run: $RUN_URL
+          - Commit: ${{ github.sha }}
+          - When: $(date -u +%FT%TZ)
+
+          Check the run's logs for the failing request and status."
+          EXISTING=$(gh issue list --repo "${{ github.repository }}" --state open --label "$LABEL" --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$EXISTING" ]; then
+            gh issue comment "$EXISTING" --repo "${{ github.repository }}" --body "$BODY"
+          else
+            gh issue create --repo "${{ github.repository }}" --title "$TITLE" --label "$LABEL" --body "$BODY"
+          fi
