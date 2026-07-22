@@ -28,9 +28,12 @@ permissions:
   issues: write
 
 env:
-  # Base Supabase URL. Not sensitive; the script defaults to the project ref if
-  # this is unset.
+  # Base Supabase URL (public, not a secret) — supplied via a repo variable so
+  # the target project is not hardcoded in this public repo. Required: the
+  # refresh throws if neither SUPABASE_URL nor SUPABASE_PROJECT_REF is set.
   SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+  # Alternative to SUPABASE_URL: just the project ref, also from a repo variable.
+  SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
   # The only credential. service_role bypasses RLS and is the sole role granted
   # execute on upsert_leagues (revoked from public/anon/authenticated).
   SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}

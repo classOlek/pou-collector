@@ -49,9 +49,6 @@ export interface RefreshEnv {
 
 export const POE_LEAGUES_URL = 'https://api.pathofexile.com/leagues?type=main&realm=pc';
 
-/** Default project ref for classOlek/olsCloud-supabase; overridable via env. */
-const DEFAULT_PROJECT_REF = 'oamakfruhuvzbodslezp';
-
 const MAX_ATTEMPTS = 4;
 
 /**
@@ -67,9 +64,23 @@ export function userAgent(contactEmail: string): string {
 export function resolveEnv(source: Record<string, string | undefined>): RefreshEnv {
   const serviceRoleKey = required(source, 'SUPABASE_SERVICE_ROLE_KEY');
   const contactEmail = required(source, 'COLLECTOR_CONTACT_EMAIL');
-  const ref = source.SUPABASE_PROJECT_REF ?? DEFAULT_PROJECT_REF;
-  const supabaseUrl = (source.SUPABASE_URL ?? `https://${ref}.supabase.co`).replace(/\/+$/, '');
+  const supabaseUrl = resolveSupabaseUrl(source);
   return { supabaseUrl, serviceRoleKey, contactEmail };
+}
+
+/**
+ * Resolve the Supabase base URL from configuration only — either SUPABASE_URL
+ * (full base URL) or SUPABASE_PROJECT_REF (the project ref). The target project
+ * is never baked into this public repo; a missing target fails loudly. The
+ * project ref/URL is public (not a secret), but it must come from env/vars so
+ * this repo does not point at a specific project on its own.
+ */
+function resolveSupabaseUrl(source: Record<string, string | undefined>): string {
+  const explicit = source.SUPABASE_URL?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const ref = source.SUPABASE_PROJECT_REF?.trim();
+  if (ref) return `https://${ref}.supabase.co`;
+  throw new Error('Missing Supabase target: set SUPABASE_URL or SUPABASE_PROJECT_REF.');
 }
 
 function required(source: Record<string, string | undefined>, key: string): string {
