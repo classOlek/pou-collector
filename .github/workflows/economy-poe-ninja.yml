@@ -22,8 +22,8 @@ name: ECONOMY POE.NINJA
 # no other workflow touches (retention deletes only raw/chunk/detail keys), so
 # it never shares an R2 object with the snapshot pipeline.
 on:
-  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
-  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # Scheduled cron disabled: cadence is driven by an external cron scheduler,
+  # which dispatches this workflow. The GH cron is
   # kept here (commented) only as a record of the intended :52 cadence.
   # schedule:
   #   - cron: '52 * * * *'

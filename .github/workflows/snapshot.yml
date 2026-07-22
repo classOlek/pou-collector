@@ -2,7 +2,7 @@ name: UPDATE collect snapshot
 
 # The COLLECT pipeline: drain the queue the new-snapshot workflow seeded.
 # Each fire is one coordinate → worker-matrix → finalize pass over the R2
-# state. The cadence is EXTERNAL: the Cloudflare Worker scheduler (scheduler/)
+# state. The cadence is EXTERNAL: an external cron scheduler
 # dispatches a fire every 10 minutes (skipping ticks while a build-roster or
 # new-snapshot run is queued/active, so a collect fire can never displace them
 # in the shared concurrency group). The wave pace on GGG is still bounded
@@ -29,8 +29,8 @@ name: UPDATE collect snapshot
 # fires, so coordinate/finalize never overlap a previous fire's jobs, closes
 # never overlap workers, and the R2 state needs no locking.
 on:
-  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
-  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # Scheduled cron disabled: cadence is driven by an external cron scheduler,
+  # which dispatches this workflow. The GH cron is
   # kept here (commented) only as a record of the intended :13/:43 cadence.
   # schedule:
   #   - cron: '13,43 * * * *'

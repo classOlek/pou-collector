@@ -2,16 +2,16 @@ name: REFRESH leagues
 
 # Refreshes the Path of Exile "main" leagues cache in Supabase. Fetches
 # https://api.pathofexile.com/leagues?type=main&realm=pc and POSTs the array to
-# the public.upsert_leagues(payload jsonb) RPC in classOlek/olsCloud-supabase,
-# which owns the flatten/reshape/upsert transform. This is the external
-# replacement for that project's former in-database pipeline (pg_cron + pg_net).
+# the public.upsert_leagues(payload jsonb) RPC in the Supabase project, which
+# owns the flatten/reshape/upsert transform. This is the external replacement
+# for that project's former in-database pipeline (pg_cron + pg_net).
 #
 # The job's only Supabase contact is one URL (/rest/v1/rpc/upsert_leagues); it
 # needs no database connection and no R2 credentials — hence its own package
 # (@pou/leagues), disjoint from the collector.
 on:
-  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
-  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # Scheduled cron disabled: cadence is driven by an external cron scheduler,
+  # which dispatches this workflow. The GH cron is
   # kept here (commented) only as a degraded-mode backstop record — an
   # off-peak minute, hourly (the leagues list moves slowly).
   # schedule:

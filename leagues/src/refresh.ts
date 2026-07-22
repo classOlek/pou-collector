@@ -3,10 +3,10 @@
  * Supabase.
  *
  * This is the external replacement for the former in-database refresh pipeline
- * that lived in classOlek/olsCloud-supabase (pg_cron + pg_net). The job runs in
- * GitHub Actions (dispatched by the Cloudflare Worker cron in
- * classOlek/olsCloud-scheduler) and its only Supabase contact is a single URL:
- * it POSTs the raw API array to the public.upsert_leagues(payload jsonb) RPC,
+ * that lived in the Supabase project (pg_cron + pg_net). The job runs in GitHub
+ * Actions (dispatched by an external cron scheduler) and its only Supabase
+ * contact is a single URL: it POSTs the raw API array to the
+ * public.upsert_leagues(payload jsonb) RPC,
  * which still owns the flatten/reshape/upsert transform inside the database.
  *
  * Everything here is pure and network-injected (see RefreshDeps) so the test
@@ -52,12 +52,13 @@ export const POE_LEAGUES_URL = 'https://api.pathofexile.com/leagues?type=main&re
 const MAX_ATTEMPTS = 4;
 
 /**
- * GGG's API policy requires an identifiable User-Agent naming the app with a
- * reachable contact (the same discipline as hard rule #1 elsewhere in this
- * repo); Cloudflare may 403 generic ones.
+ * GGG's API policy requires an identifiable User-Agent carrying a reachable
+ * contact (the same discipline as hard rule #1 elsewhere in this repo). The
+ * product token is a neutral, functional name — it must NOT leak the
+ * project/repo name; identifiability is carried by the contact address.
  */
 export function userAgent(contactEmail: string): string {
-  return `olsCloud-leagues-refresh (+https://github.com/classOlek/olsCloud-workers; contact: ${contactEmail})`;
+  return `poe-leagues-refresh/0.1 (+${contactEmail})`;
 }
 
 /** Resolve and validate the runtime environment. Throws on missing secrets. */

@@ -6,8 +6,8 @@ name: BUILD roster
 # workflow seeds from whatever roster this workflow last produced, and the
 # collect workflow drains that snapshot's queue.
 #
-# The 30-minute cadence is driven EXTERNALLY: the Cloudflare Worker scheduler
-# (scheduler/) dispatches this workflow at :00 and :30 — workflow_dispatch runs
+# The 30-minute cadence is driven EXTERNALLY: an external cron scheduler
+# dispatches this workflow at :00 and :30 — workflow_dispatch runs
 # are created deterministically, unlike `schedule` events, which GitHub delivers
 # best-effort and silently drops under load (observed: a */30 cron firing about
 # once every 1–3 hours on this repo). The cron below is only a BACKSTOP that
@@ -24,8 +24,8 @@ name: BUILD roster
 # a build writes only the roster and its own limiter state, so it never shares
 # an R2 object with a worker or a new-snapshot fire.
 on:
-  # Scheduled cron disabled: cadence is driven by the Cloudflare Worker cron in
-  # classOlek/olsCloud-scheduler, which dispatches this workflow. The GH cron is
+  # Scheduled cron disabled: cadence is driven by an external cron scheduler,
+  # which dispatches this workflow. The GH cron is
   # kept here (commented) only as a record of the intended :07/:37 cadence.
   # schedule:
   #   - cron: '7,37 * * * *'
