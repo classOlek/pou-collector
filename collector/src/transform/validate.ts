@@ -7,8 +7,8 @@
  * a degenerate snapshot. Coverage honesty (Phase 4 #12) is enforced here: the
  * published meta must agree with the manifest's outcome counts.
  */
-import type { AggregateFile, Coverage, SnapshotMeta } from '@pou/shared';
-import { SCHEMA_VERSION } from '@pou/shared';
+import type { AggregateFile, Coverage, SnapshotMeta } from '@classolek/shared';
+import { SCHEMA_VERSION } from '@classolek/shared';
 
 export interface ValidationInput {
   meta: SnapshotMeta;

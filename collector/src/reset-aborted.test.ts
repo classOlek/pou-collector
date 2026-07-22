@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { SnapshotManifest, SnapshotPhase } from '@pou/shared';
+import type { SnapshotManifest, SnapshotPhase } from '@classolek/shared';
 import { MemoryObjectStore } from './checkpoint/object-store.js';
 import { CheckpointStore } from './checkpoint/store.js';
 import { resetAbortedCheckpoints, shouldResetAborted } from './reset-aborted.js';

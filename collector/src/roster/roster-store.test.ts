@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SCHEMA_VERSION, rosterPath } from '@pou/shared';
+import { SCHEMA_VERSION, rosterPath } from '@classolek/shared';
 import { MemoryObjectStore, putJson } from '../checkpoint/object-store.js';
 import type { LadderEntry } from '../sources/types.js';
 import { RosterStore, emptyRoster, mergeLadder } from './roster-store.js';

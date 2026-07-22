@@ -11,8 +11,8 @@
  *    in-flight phases).
  * Workflow-level concurrency serializes runs, so these phases never overlap.
  */
-import type { QueuedCharacter, RosterCharacter, SnapshotChunk } from '@pou/shared';
-import { SCHEMA_VERSION, chunkPath, chunkPrefix, isChunkResolved } from '@pou/shared';
+import type { QueuedCharacter, RosterCharacter, SnapshotChunk } from '@classolek/shared';
+import { SCHEMA_VERSION, chunkPath, chunkPrefix, isChunkResolved } from '@classolek/shared';
 import { getJson, listKeys, putJson, type ObjectStore } from '../checkpoint/object-store.js';
 
 /**

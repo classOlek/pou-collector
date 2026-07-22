@@ -6,7 +6,7 @@ import {
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
-} from '@pou/shared';
+} from '@classolek/shared';
 import { contentTypeForKey, isTransientS3Error, retryTransient } from './s3-store.js';
 
 describe('contentTypeForKey', () => {

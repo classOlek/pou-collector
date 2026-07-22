@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { LimiterMemory } from '@pou/shared';
-import { emptyTally } from '@pou/shared';
+import type { LimiterMemory } from '@classolek/shared';
+import { emptyTally } from '@classolek/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
 import { CheckpointStore } from '../checkpoint/store.js';
 import { FakeClock } from '../rate-limit/clock.js';

@@ -11,14 +11,14 @@
  * Everything runs against the MockPoeApi and MemoryObjectStore — zero network.
  */
 import { describe, expect, it } from 'vitest';
-import type { IndexFile, SnapshotMeta } from '@pou/shared';
+import type { IndexFile, SnapshotMeta } from '@classolek/shared';
 import {
   INDEX_PATH,
   rawShardPrefix,
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
-} from '@pou/shared';
+} from '@classolek/shared';
 import { getJson } from '../checkpoint/object-store.js';
 import { LEAGUE, makeRunHarness, runToSettle } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';

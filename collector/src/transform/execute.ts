@@ -11,8 +11,8 @@
  *  - Below the ceiling the failure is surfaced (the workflow alerts) with the
  *    phase left `transforming` so the next run retries.
  */
-import type { SnapshotManifest } from '@pou/shared';
-import { rawShardPrefix } from '@pou/shared';
+import type { SnapshotManifest } from '@classolek/shared';
+import { rawShardPrefix } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';

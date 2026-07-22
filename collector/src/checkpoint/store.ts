@@ -8,8 +8,8 @@
  * snapshot) rather than trusted, which would otherwise produce e.g. an
  * `undefined` shard index that silently overwrites shards.
  */
-import type { SnapshotManifest } from '@pou/shared';
-import { STATE_PREFIX, SCHEMA_VERSION, checkpointPath, classifyKey } from '@pou/shared';
+import type { SnapshotManifest } from '@classolek/shared';
+import { STATE_PREFIX, SCHEMA_VERSION, checkpointPath, classifyKey } from '@classolek/shared';
 import { listKeys, putJson, type ObjectStore } from './object-store.js';
 
 export class CheckpointStore {

@@ -35,12 +35,12 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.665.0
         version: 3.1090.0
+      '@classolek/shared':
+        specifier: workspace:*
+        version: link:../shared
       '@duckdb/node-api':
         specifier: ^1.4.0-r.1
         version: 1.4.0-r.2
-      '@pou/shared':
-        specifier: workspace:*
-        version: link:../shared
     devDependencies:
       '@types/node':
         specifier: ^22.16.0

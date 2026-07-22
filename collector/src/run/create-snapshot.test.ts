@@ -6,8 +6,8 @@
  * Ladder capture / roster merge live in build-roster.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import type { SnapshotChunk, SnapshotMeta } from '@pou/shared';
-import { chunkPath, isChunkResolved, snapshotMetaPath } from '@pou/shared';
+import type { SnapshotChunk, SnapshotMeta } from '@classolek/shared';
+import { chunkPath, isChunkResolved, snapshotMetaPath } from '@classolek/shared';
 import { getJson } from '../checkpoint/object-store.js';
 import { liveSnapshots } from './create-snapshot.js';
 import { ChunkStore } from '../chunks/chunk-store.js';

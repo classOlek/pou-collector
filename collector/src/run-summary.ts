@@ -8,7 +8,7 @@
  * line to stdout so a run is greppable in the logs.
  */
 import { appendFileSync } from 'node:fs';
-import type { LimiterMemory } from '@pou/shared';
+import type { LimiterMemory } from '@classolek/shared';
 import type { CoordinatorSummary } from './run/coordinator.js';
 import type { BuildSummary } from './run/build-roster.js';
 import type { CreateSummary } from './run/create-snapshot.js';

@@ -8,7 +8,7 @@
  * downloads). All tree access goes through the `TreeSource` seam so tests use a
  * small fixture tree and never hit the network (hard rule #3).
  */
-import { treeCachePath } from '@pou/shared';
+import { treeCachePath } from '@classolek/shared';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 
 /** One resolved passive node. */

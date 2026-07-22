@@ -4,8 +4,8 @@
  * the roster this produces).
  */
 import { describe, expect, it } from 'vitest';
-import type { RosterFile } from '@pou/shared';
-import { rosterPath } from '@pou/shared';
+import type { RosterFile } from '@classolek/shared';
+import { rosterPath } from '@classolek/shared';
 import { getJson } from '../checkpoint/object-store.js';
 import { HOUR_MS } from './config.js';
 import { LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';

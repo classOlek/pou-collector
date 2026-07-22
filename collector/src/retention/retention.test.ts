@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { IndexFile, SnapshotManifest, SnapshotMeta } from '@pou/shared';
+import type { IndexFile, SnapshotManifest, SnapshotMeta } from '@classolek/shared';
 import {
   INDEX_PATH,
   SCHEMA_VERSION,
@@ -9,7 +9,7 @@ import {
   snapshotDetailPath,
   snapshotMetaPath,
   treeCachePath,
-} from '@pou/shared';
+} from '@classolek/shared';
 import { MemoryObjectStore, getJson, putJson } from '../checkpoint/object-store.js';
 import { CheckpointStore } from '../checkpoint/store.js';
 import { FakeClock } from '../rate-limit/clock.js';

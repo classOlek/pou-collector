@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { IndexFile } from '@pou/shared';
-import { INDEX_PATH, SCHEMA_VERSION } from '@pou/shared';
+import type { IndexFile } from '@classolek/shared';
+import { INDEX_PATH, SCHEMA_VERSION } from '@classolek/shared';
 import { MemoryObjectStore, getJson, putJson } from './checkpoint/object-store.js';
 import { FakeClock } from './rate-limit/clock.js';
 import {

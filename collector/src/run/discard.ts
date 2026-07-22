@@ -5,7 +5,7 @@
  * chunk files, so the frontend never lists a snapshot that will never finish.
  * Completed snapshots are immutable and are NEVER passed through here.
  */
-import { chunkPrefix, rawShardPrefix, snapshotPrefix } from '@pou/shared';
+import { chunkPrefix, rawShardPrefix, snapshotPrefix } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
 import { readIndex, removeSnapshot, writeIndex } from '../index-file.js';

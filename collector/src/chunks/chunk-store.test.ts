@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { RosterCharacter } from '@pou/shared';
-import { chunkPath } from '@pou/shared';
+import type { RosterCharacter } from '@classolek/shared';
+import { chunkPath } from '@classolek/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
 import { ChunkStore, ownedChunkIndices, pendingChunkIndices, planChunks } from './chunk-store.js';
 

@@ -31,8 +31,8 @@
  * Runs alone in the shared `snapshot-collector` concurrency group, so a close
  * never overlaps a collect fire's workers (single writer per object, no locks).
  */
-import type { RosterCharacter, SnapshotManifest } from '@pou/shared';
-import { SCHEMA_VERSION, chunkCountFor, emptyTally, isInFlight } from '@pou/shared';
+import type { RosterCharacter, SnapshotManifest } from '@classolek/shared';
+import { SCHEMA_VERSION, chunkCountFor, emptyTally, isInFlight } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';

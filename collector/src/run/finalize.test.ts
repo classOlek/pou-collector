@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { IndexFile, SnapshotMeta } from '@pou/shared';
-import { INDEX_PATH, ipPacePath, snapshotMetaPath, workerStatePath } from '@pou/shared';
+import type { IndexFile, SnapshotMeta } from '@classolek/shared';
+import { INDEX_PATH, ipPacePath, snapshotMetaPath, workerStatePath } from '@classolek/shared';
 import { getJson } from '../checkpoint/object-store.js';
 import { PaceStateStore } from '../rate-limit/pace-store.js';
 import type { PassiveTree, TreeOrigin } from '../transform/tree-source.js';

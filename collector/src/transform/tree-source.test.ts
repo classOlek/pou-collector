@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { treeCachePath } from '@pou/shared';
+import { treeCachePath } from '@classolek/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
 import { CachedTreeSource } from './tree-source.js';
 import { FakeTreeOrigin } from '../../test/transform-fixtures.js';

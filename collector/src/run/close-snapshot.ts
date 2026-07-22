@@ -12,7 +12,7 @@
  * create workflow fails loudly (alert issue) with the phase left
  * `transforming`, and the next create fire resumes the close.
  */
-import type { SnapshotManifest } from '@pou/shared';
+import type { SnapshotManifest } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';

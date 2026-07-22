@@ -19,7 +19,7 @@
  *   • IP undefined (discovery failed) → slot spend kept (conservative, today's
  *     behavior, never evading).
  */
-import type { LimiterMemory } from '@pou/shared';
+import type { LimiterMemory } from '@classolek/shared';
 import type { RateLimiter } from './limiter.js';
 import { LimiterStateStore } from './limiter-store.js';
 import { PaceStateStore } from './pace-store.js';

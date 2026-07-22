@@ -13,7 +13,7 @@
  *   args   = --league Mirage            # dry run: report what would be cleared
  *   args   = --league Mirage --apply    # clear the checkpoint + raw shards
  */
-import { RAW_PREFIX, STATE_PREFIX, parseChunkKey } from '@pou/shared';
+import { RAW_PREFIX, STATE_PREFIX, parseChunkKey } from '@classolek/shared';
 import { S3ObjectStore } from '../../src/checkpoint/s3-store.js';
 import { CheckpointStore } from '../../src/checkpoint/store.js';
 import { listKeys } from '../../src/checkpoint/object-store.js';

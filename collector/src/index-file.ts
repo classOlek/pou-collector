@@ -9,8 +9,8 @@
  * the frontend. Only this writer's own snapshot entry is upserted.
  */
 import type { Clock } from './rate-limit/clock.js';
-import type { IndexFile, IndexSnapshot } from '@pou/shared';
-import { INDEX_PATH, SCHEMA_VERSION } from '@pou/shared';
+import type { IndexFile, IndexSnapshot } from '@classolek/shared';
+import { INDEX_PATH, SCHEMA_VERSION } from '@classolek/shared';
 import { getJson, putJson, type ObjectStore } from './checkpoint/object-store.js';
 
 export function emptyIndex(): IndexFile {

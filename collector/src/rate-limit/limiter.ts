@@ -35,7 +35,7 @@
  * moved would be rate-limit evasion. Unknown current IP keeps the pace state
  * (conservative, never evading).
  */
-import type { LimiterMemory, RateLimitRule } from '@pou/shared';
+import type { LimiterMemory, RateLimitRule } from '@classolek/shared';
 import type { Clock } from './clock.js';
 import {
   activeRestrictionSec,

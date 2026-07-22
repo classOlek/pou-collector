@@ -14,7 +14,7 @@
  *     (executeTransform: bounded attempts → published, immutable from then on)
  *     and deletes the chunk files.
  */
-import type { OutcomeTally, SnapshotManifest, SnapshotPhase } from '@pou/shared';
+import type { OutcomeTally, SnapshotManifest, SnapshotPhase } from '@classolek/shared';
 import {
   addTallies,
   emptyTally,
@@ -22,7 +22,7 @@ import {
   pendingOfTally,
   rawShardPrefix,
   tallyOutcomes,
-} from '@pou/shared';
+} from '@classolek/shared';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import { PaceStateStore } from '../rate-limit/pace-store.js';

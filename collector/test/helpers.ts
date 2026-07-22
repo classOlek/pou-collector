@@ -3,8 +3,8 @@
  * outcomes and build manifests the same way.
  */
 import { gunzipSync, gzipSync } from 'node:zlib';
-import type { LimiterMemory, SnapshotManifest } from '@pou/shared';
-import { SCHEMA_VERSION, emptyTally, rawChunkShardPath, tallyOutcomes } from '@pou/shared';
+import type { LimiterMemory, SnapshotManifest } from '@classolek/shared';
+import { SCHEMA_VERSION, emptyTally, rawChunkShardPath, tallyOutcomes } from '@classolek/shared';
 import type { MemoryObjectStore } from '../src/checkpoint/object-store.js';
 
 // Re-export the single production tally so tests never re-implement it.
