@@ -60,6 +60,7 @@ import { CachedTreeSource } from './transform/tree-source.js';
 import { HttpTreeOrigin } from './transform/tree-origin.js';
 import { runRetention } from './retention/retention.js';
 import { EconomyCollector } from './economy/poe-ninja.js';
+import { fetchEconomyLeagues } from './economy/leagues-source.js';
 import { resetAbortedCheckpoints, shouldResetAborted } from './reset-aborted.js';
 import {
   buildExitCode,
@@ -276,8 +277,17 @@ async function retention(config: CollectorConfig, store: ObjectStore): Promise<n
 }
 
 async function economy(_config: CollectorConfig, store: ObjectStore): Promise<number> {
+  // Which leagues to cache is derived from the Supabase leagues endpoint
+  // (active temporary leagues + Standard) rather than hardcoded; a failure to
+  // resolve it fails the run loudly so the alert job fires.
+  const leagues = await fetchEconomyLeagues(process.env, {
+    http: createFetchHttpClient(),
+    now: () => systemClock.now(),
+  });
+  console.log(`[economy] leagues from endpoint: ${JSON.stringify(leagues)}`);
+
   const collector = new EconomyCollector(
-    { userAgent: buildUserAgent() },
+    { userAgent: buildUserAgent(), leagues },
     {
       clock: systemClock,
       http: createFetchHttpClient(),

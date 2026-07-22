@@ -7,9 +7,9 @@ name: ECONOMY POE.NINJA
 # place each fire (all-or-nothing per league: a partial pass keeps the last
 # good file and fails the run so the alert job fires).
 #
-# The league list is hardcoded for this iteration
-# (collector/src/economy/poe-ninja.ts ECONOMY_LEAGUES); a later iteration
-# derives it from /poe1/api/economy/leagues.
+# The league list is derived at runtime from the Supabase leagues endpoint
+# (collector/src/economy/leagues-source.ts): every active temporary league plus
+# the permanent Standard. Between leagues this is just Standard.
 #
 # Cadence: hourly. poe.ninja refreshes poe1 overviews roughly every 15 minutes
 # and HTTP-caches responses ~5 minutes, and their guidelines ask for reasonable
@@ -46,6 +46,15 @@ env:
   # for a descriptive UA identifying the app and a contact — same discipline
   # as hard rule #1). The collector throws without it.
   COLLECTOR_CONTACT_EMAIL: ${{ secrets.COLLECTOR_CONTACT_EMAIL }}
+  # League selection is derived from the Supabase leagues endpoint (active
+  # temporary leagues + Standard). LEAGUES_ENDPOINT is an optional full resource
+  # URL; if unset the target falls back to SUPABASE_URL / SUPABASE_PROJECT_REF.
+  # These are public (repo variables); only the service_role key is a secret,
+  # and it reads the endpoint by bypassing RLS.
+  LEAGUES_ENDPOINT: ${{ vars.LEAGUES_ENDPOINT }}
+  SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+  SUPABASE_PROJECT_REF: ${{ vars.SUPABASE_PROJECT_REF }}
+  SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.SUPABASE_SERVICE_ROLE_KEY }}
 
 jobs:
   cache:

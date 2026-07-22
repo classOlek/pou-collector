@@ -20,9 +20,11 @@ import type { HttpClient } from '../sources/types.js';
 import { putJson, type ObjectStore } from '../checkpoint/object-store.js';
 
 /**
- * Leagues to cache, hardcoded for the first iteration (a later one derives
- * this from /poe1/api/economy/leagues): the current temporary challenge league
- * plus the permanent Standard league.
+ * Fallback league list used only when the caller does not supply one. The
+ * economy CLI now derives the real list from the Supabase leagues endpoint
+ * (see economy/leagues-source.ts — active temporary leagues + Standard); this
+ * constant remains as the class default so unit tests and any direct caller
+ * still have a sane pair to run against.
  */
 export const ECONOMY_LEAGUES: readonly string[] = ['Mirage', 'Standard'];
 
