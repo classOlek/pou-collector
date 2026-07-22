@@ -206,7 +206,7 @@ describe('RateLimiter persistence and resume', () => {
       consecutiveErrors: 0,
       ratePerSec: 0.5,
       burst: 4,
-    } as unknown as import('@pou/shared').LimiterMemory;
+    } as unknown as import('@classolek/shared').LimiterMemory;
     const limiter = new RateLimiter(clock, DEFAULT_LIMITER_CONFIG, legacy);
     expect(limiter.toMemory().recentAcquires).toEqual([]);
     await expect(limiter.acquire()).resolves.toBeUndefined(); // no throw, paces from seed

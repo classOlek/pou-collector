@@ -29,7 +29,7 @@
  * Disabled when earlyStopQuorum is 0 (the default) or no run id is available
  * (local runs outside GitHub Actions): no marker writes, no marker reads.
  */
-import { workerStatePath } from '@pou/shared';
+import { workerStatePath } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import { getJson, putJson, type ObjectStore } from '../checkpoint/object-store.js';
 import { workerSlot } from '../rate-limit/limiter-store.js';

@@ -41,7 +41,7 @@ import type {
   Coverage,
   SnapshotManifest,
   SnapshotMeta,
-} from '@pou/shared';
+} from '@classolek/shared';
 import {
   AGGREGATE_KINDS,
   SCHEMA_VERSION,
@@ -52,7 +52,7 @@ import {
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
-} from '@pou/shared';
+} from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { listKeys, putJson, type ObjectStore } from '../checkpoint/object-store.js';

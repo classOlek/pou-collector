@@ -1,0 +1,51 @@
+name: Publish shared
+
+# Publishes the @classolek/shared contract package to GitHub Packages. The web
+# reader (olsCloud-dashboard) consumes it from there instead of keeping a
+# hand-synced copy. Publish is manual (or via a `shared-v*` tag) so a schema
+# change and its version bump are always deliberate.
+#
+# Versioning: bump `shared/package.json` "version" (pair a breaking data-shape
+# change with a SCHEMA_VERSION bump), commit, then run this workflow — or push a
+# tag like `shared-v0.2.0`. GitHub Packages rejects republishing an existing
+# version, so the version must be new.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'shared-v*'
+
+concurrency:
+  group: publish-shared
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+          registry-url: 'https://npm.pkg.github.com'
+          scope: '@classolek'
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build
+        run: pnpm --filter @classolek/shared build
+
+      - name: Publish to GitHub Packages
+        run: pnpm --filter @classolek/shared publish --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

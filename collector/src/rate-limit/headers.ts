@@ -13,7 +13,7 @@
  * `penalty`-second restriction. A state tuple = current `hits` used in that
  * window and the currently-active restriction seconds (3rd field).
  */
-import type { RateLimitRule, RateLimitTuple } from '@pou/shared';
+import type { RateLimitRule, RateLimitTuple } from '@classolek/shared';
 
 function toInt(raw: string | undefined): number {
   const n = Number.parseInt((raw ?? '').trim(), 10);

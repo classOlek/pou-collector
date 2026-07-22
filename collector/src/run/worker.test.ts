@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { gzipSync } from 'node:zlib';
-import { chunkPath, isChunkResolved, rawChunkShardPath, rawChunkShardPrefix } from '@pou/shared';
+import {
+  chunkPath,
+  isChunkResolved,
+  rawChunkShardPath,
+  rawChunkShardPrefix,
+} from '@classolek/shared';
 import { getJson, putJson } from '../checkpoint/object-store.js';
 import { ChunkStore, assignedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
 import { LimiterStateStore, workerSlot } from '../rate-limit/limiter-store.js';

@@ -17,7 +17,7 @@
  * than one shard. `chars` keeps one row per (account, character), the latest by
  * fetchedAt, so every downstream table is deduped by construction.
  */
-import type { AggregateKind } from '@pou/shared';
+import type { AggregateKind } from '@classolek/shared';
 
 /** Column spec for read_json over the raw shard NDJSON. */
 const RAW_COLUMNS =

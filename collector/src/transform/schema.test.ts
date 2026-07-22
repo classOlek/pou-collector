@@ -1,6 +1,6 @@
 /**
  * Pins the REAL transform-emitted detail schema to the shared descriptor
- * (@pou/shared DETAIL_TABLE_SCHEMA). This is the non-circular half of the
+ * (@classolek/shared DETAIL_TABLE_SCHEMA). This is the non-circular half of the
  * drift guard: the web derives its read schema and fixtures FROM the descriptor,
  * and this test asserts the transform's actual DuckDB output (column names +
  * types) matches it — so a transform change that alters a column or type fails CI
@@ -14,7 +14,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { DETAIL_TABLE_SCHEMA } from '@pou/shared';
+import { DETAIL_TABLE_SCHEMA } from '@classolek/shared';
 import { DuckDb } from './duckdb.js';
 import {
   createCharactersSql,

@@ -21,7 +21,7 @@
   "dependencies": {
     "@aws-sdk/client-s3": "^3.665.0",
     "@duckdb/node-api": "^1.4.0-r.1",
-    "@pou/shared": "workspace:*"
+    "@classolek/shared": "workspace:*"
   },
   "devDependencies": {
     "@types/node": "^22.16.0",

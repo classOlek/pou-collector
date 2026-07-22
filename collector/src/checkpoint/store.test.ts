@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { SnapshotManifest } from '@pou/shared';
-import { checkpointPath } from '@pou/shared';
+import type { SnapshotManifest } from '@classolek/shared';
+import { checkpointPath } from '@classolek/shared';
 import { MemoryObjectStore } from './object-store.js';
 import { CheckpointStore } from './store.js';
 import { fixtureManifest } from '../../test/helpers.js';

@@ -14,7 +14,7 @@
  *    app offers aggregates-only instead of 404-ing the explorer (index is the
  *    mutable entry point; meta.json stays immutable).
  */
-import type { KeyCategory, SnapshotMeta, SnapshotRef } from '@pou/shared';
+import type { KeyCategory, SnapshotMeta, SnapshotRef } from '@classolek/shared';
 import {
   chunkPrefix,
   classifyKey,
@@ -24,7 +24,7 @@ import {
   parseRawKey,
   rawShardPrefix,
   snapshotMetaPath,
-} from '@pou/shared';
+} from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { getJson, type ObjectInfo, type ObjectStore } from '../checkpoint/object-store.js';

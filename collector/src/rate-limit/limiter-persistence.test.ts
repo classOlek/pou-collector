@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import type { LimiterMemory } from '@pou/shared';
+import type { LimiterMemory } from '@classolek/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
 import { FakeClock } from './clock.js';
 import { RateLimiter } from './limiter.js';

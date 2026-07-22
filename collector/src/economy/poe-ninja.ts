@@ -13,8 +13,8 @@
  * good file untouched and fails the run — a partially-overwritten cache would
  * silently drop categories readers already relied on.
  */
-import type { EconomyEndpointKey, EconomySnapshotFile } from '@pou/shared';
-import { ECONOMY_SCHEMA_VERSION, economyPath } from '@pou/shared';
+import type { EconomyEndpointKey, EconomySnapshotFile } from '@classolek/shared';
+import { ECONOMY_SCHEMA_VERSION, economyPath } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { HttpClient } from '../sources/types.js';
 import { putJson, type ObjectStore } from '../checkpoint/object-store.js';

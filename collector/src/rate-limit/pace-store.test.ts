@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SCHEMA_VERSION, ipPacePath } from '@pou/shared';
+import { SCHEMA_VERSION, ipPacePath } from '@classolek/shared';
 import { MemoryObjectStore, putJson } from '../checkpoint/object-store.js';
 import { PaceStateStore } from './pace-store.js';
 

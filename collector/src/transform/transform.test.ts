@@ -3,7 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AggregateFile, AggregateKind, IndexFile, SnapshotMeta } from '@pou/shared';
+import type { AggregateFile, AggregateKind, IndexFile, SnapshotMeta } from '@classolek/shared';
 import {
   INDEX_PATH,
   SCHEMA_VERSION,
@@ -12,7 +12,7 @@ import {
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
-} from '@pou/shared';
+} from '@classolek/shared';
 import { MemoryObjectStore, getJson } from '../checkpoint/object-store.js';
 import { CheckpointStore } from '../checkpoint/store.js';
 import { FakeClock } from '../rate-limit/clock.js';

@@ -7,8 +7,8 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { SnapshotManifest } from '@pou/shared';
-import { SCHEMA_VERSION, chunkCountFor, emptyTally } from '@pou/shared';
+import type { SnapshotManifest } from '@classolek/shared';
+import { SCHEMA_VERSION, chunkCountFor, emptyTally } from '@classolek/shared';
 import type { PassiveTree, TreeOrigin } from '../src/transform/tree-source.js';
 
 const here = dirname(fileURLToPath(import.meta.url));

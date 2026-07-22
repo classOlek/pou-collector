@@ -23,14 +23,14 @@
  * another worker's chunks — every object keeps exactly one writer.
  */
 import { gzipSync } from 'node:zlib';
-import type { OutcomeTally, SnapshotChunk, SnapshotManifest } from '@pou/shared';
+import type { OutcomeTally, SnapshotChunk, SnapshotManifest } from '@classolek/shared';
 import {
   addTallies,
   emptyTally,
   isChunkResolved,
   rawChunkShardPath,
   tallyOutcomes,
-} from '@pou/shared';
+} from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { RateLimiter } from '../rate-limit/limiter.js';
 import { workerSlot } from '../rate-limit/limiter-store.js';

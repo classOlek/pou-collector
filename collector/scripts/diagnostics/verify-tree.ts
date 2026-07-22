@@ -19,8 +19,8 @@
  *   args   = [--snapshot=<id>] [--max-shards=<n>]   (both optional)
  */
 import { gunzipSync } from 'node:zlib';
-import type { SnapshotManifest } from '@pou/shared';
-import { checkpointPath, rawShardPrefix } from '@pou/shared';
+import type { SnapshotManifest } from '@classolek/shared';
+import { checkpointPath, rawShardPrefix } from '@classolek/shared';
 import { loadConfig, treeVersionFor } from '../../src/config-file.js';
 import { buildUserAgent } from '../../src/config.js';
 import { createFetchHttpClient } from '../../src/http/fetch-client.js';

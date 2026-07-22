@@ -6,8 +6,8 @@
  * slot persist their own observed rules / penalty / recent-acquire window
  * across cron runs. A slot only ever writes its own file (single writer).
  */
-import type { LimiterMemory, WorkerState } from '@pou/shared';
-import { SCHEMA_VERSION, workerStatePath } from '@pou/shared';
+import type { LimiterMemory, WorkerState } from '@classolek/shared';
+import { SCHEMA_VERSION, workerStatePath } from '@classolek/shared';
 import { getJson, putJson, type ObjectStore } from '../checkpoint/object-store.js';
 
 /** The coordinator's slot name; workers use `w<index>`. */

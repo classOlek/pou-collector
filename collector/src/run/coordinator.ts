@@ -26,8 +26,8 @@
  * anything; the rollup in the manifest is finalize's last word on what is
  * still pending.
  */
-import type { SnapshotManifest, SnapshotPhase } from '@pou/shared';
-import { pendingOfTally } from '@pou/shared';
+import type { SnapshotManifest, SnapshotPhase } from '@classolek/shared';
+import { pendingOfTally } from '@classolek/shared';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import type { Clock } from '../rate-limit/clock.js';

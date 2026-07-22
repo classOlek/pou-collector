@@ -4,7 +4,7 @@
  * step; kept free of chunk/manifest concerns so it stays a pure per-character
  * unit: entry in → entry mutated + optional raw record out.
  */
-import type { QueuedCharacter } from '@pou/shared';
+import type { QueuedCharacter } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { RateLimiter } from '../rate-limit/limiter.js';
 import type { CharacterCallResult, CharacterSource } from '../sources/types.js';

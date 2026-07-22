@@ -13,8 +13,8 @@
  * concurrency group. Absent / corrupt / foreign-schema reads fail open to
  * "fresh pace" (undefined), exactly like a missing slot file.
  */
-import type { IpPaceState } from '@pou/shared';
-import { SCHEMA_VERSION, ipPacePath, ipPacePrefix } from '@pou/shared';
+import type { IpPaceState } from '@classolek/shared';
+import { SCHEMA_VERSION, ipPacePath, ipPacePrefix } from '@classolek/shared';
 import { getJson, listKeys, putJson, type ObjectStore } from '../checkpoint/object-store.js';
 
 /** One listed IP pace file: its key and (schema-valid) contents. */

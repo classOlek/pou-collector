@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { EconomySnapshotFile } from '@pou/shared';
-import { ECONOMY_SCHEMA_VERSION, economyPath } from '@pou/shared';
+import type { EconomySnapshotFile } from '@classolek/shared';
+import { ECONOMY_SCHEMA_VERSION, economyPath } from '@classolek/shared';
 import type { HttpRequest, HttpResponse } from '../sources/types.js';
 import { MemoryObjectStore, getJson } from '../checkpoint/object-store.js';
 import { FakeClock } from '../rate-limit/clock.js';

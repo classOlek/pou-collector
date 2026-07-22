@@ -8,7 +8,7 @@
  * in-flight league is continued. One in-flight league at a time is the accepted
  * bounded scope (proper multi-league is Phase 7).
  */
-import { isInFlight } from '@pou/shared';
+import { isInFlight } from '@classolek/shared';
 import type { CheckpointStore } from './checkpoint/store.js';
 
 export async function selectCollectLeague(
