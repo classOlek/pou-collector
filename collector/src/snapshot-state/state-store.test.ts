@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { gzipSync } from 'node:zlib';
 import type { SnapshotCharacter } from '@classolek/shared';
-import { snapshotStatePath } from '@classolek/shared';
+import { snapshotStatePath, workerResultPath } from '@classolek/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
 import {
   assignedTo,
@@ -11,6 +11,7 @@ import {
   pendingIdentities,
   readState,
   writeState,
+  writeWorkerResults,
 } from './state-store.js';
 
 const LEAGUE = 'Std';
@@ -96,6 +97,27 @@ describe('writeState / readState round-trip', () => {
       'pending',
       'ok',
     ]);
+  });
+});
+
+describe('writeWorkerResults', () => {
+  it('writes a slot result file the state readers can decode, feeding mergeResults', async () => {
+    const store = new MemoryObjectStore();
+    const results = [resolved(1, 8), resolved(3, 8)];
+    await writeWorkerResults(store, LEAGUE, SNAP, 4, results);
+
+    // Same gzipped-NDJSON format at the slot's own key (single writer per w<NN>).
+    const key = workerResultPath(LEAGUE, SNAP, 4);
+    expect(store.keys()).toEqual([key]);
+    const raw = await store.get(key);
+    expect(raw?.[0]).toBe(0x1f); // gzip magic
+    expect(raw?.[1]).toBe(0x8b);
+
+    // The bytes round-trip through the state file's own merge join.
+    await writeState(store, LEAGUE, SNAP, [pending(0), pending(1), pending(2), pending(3)]);
+    const merged = await collect(mergeResults(readState(store, LEAGUE, SNAP), results));
+    expect(merged.map((c) => c.outcome)).toEqual(['pending', 'ok', 'pending', 'ok']);
+    expect(merged[1]).toMatchObject({ passiveTree: { hashes: [1, 2, 3] } });
   });
 });
 

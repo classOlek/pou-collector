@@ -19,11 +19,34 @@
  *     limiter.adoptIp): a new IP starts the per-IP windows fresh, while
  *     penalties/streaks — client-scoped signals — always carry across runs.
  *
+ * v4 dual-write (docs/PLAN_SNAPSHOT_STATE_REWORK.md, "the pipeline switches over
+ * in 3–5"): alongside the chunk/shard checkpoint every resolution also lands in
+ * this slot's ONE transient result object (state/<league>/results/<id>/w<NN>.
+ * ndjson.gz) — a gzipped NDJSON `SnapshotCharacter` line per character the
+ * worker resolved this run, carrying the raw items/passives inline for the
+ * `ok` ones. The result file is overwritten in place periodically (every
+ * `resultCheckpointEvery` resolved characters) and on every clean stop, so a
+ * worker crash loses at most a few characters' fetches, not the whole run
+ * (design decision 4). Nothing consumes it yet: finalize (Phase 5) merges the
+ * result files into the state file and sweeps them; until then the chunk files
+ * stay the authoritative queue that finalize rolls up, so BOTH are written.
+ * The chunk-based ownership above is likewise kept until Phase 6 retires the
+ * chunk model and moves the split onto the state file's line ordinals
+ * (`pendingIdentities`/`assignedTo`) — doing so now would either break the
+ * still-chunk-based finalize or put two writers on one chunk.
+ *
  * A worker never writes the manifest, the roster, another slot's state or
- * another worker's chunks — every object keeps exactly one writer.
+ * another worker's chunks/results — every object keeps exactly one writer (its
+ * own chunk files and its own `w<NN>` result object).
  */
 import { gzipSync } from 'node:zlib';
-import type { OutcomeTally, SnapshotChunk, SnapshotManifest } from '@classolek/shared';
+import type {
+  OutcomeTally,
+  QueuedCharacter,
+  SnapshotChunk,
+  SnapshotCharacter,
+  SnapshotManifest,
+} from '@classolek/shared';
 import {
   addTallies,
   emptyTally,
@@ -39,9 +62,14 @@ import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import type { CharacterSource } from '../sources/types.js';
 import { ChunkStore, ownedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
+import { writeWorkerResults } from '../snapshot-state/state-store.js';
 import { HOUR_MS } from './config.js';
 import { QuorumMonitor } from './worker-quorum.js';
 import { resolveCharacter, type WaitReporter } from './resolve-character.js';
+
+/** Result-file checkpoint cadence when a worker leaves it unset: overwrite the
+ *  slot's result object every this-many resolved characters (design decision 4). */
+const DEFAULT_RESULT_CHECKPOINT_EVERY = 50;
 
 export interface WorkerConfig {
   league: string;
@@ -67,6 +95,13 @@ export interface WorkerConfig {
   earlyStopQuorum: number;
   /** Marker sweep throttle override (test seam); see QUORUM_CHECK_INTERVAL_MS. */
   quorumCheckIntervalMillis?: number | undefined;
+  /**
+   * Overwrite this slot's result object every N resolved characters
+   * (DEFAULT_RESULT_CHECKPOINT_EVERY when unset). Bounds the fetches lost if the
+   * runner crashes mid-run to at most N characters; the final flush on any clean
+   * stop always brings the file fully current.
+   */
+  resultCheckpointEvery?: number | undefined;
 }
 
 export interface WorkerDeps {
@@ -183,6 +218,20 @@ export class Worker {
     const touched = emptyTally();
     let stop: WorkerStopReason = 'assigned_drained';
 
+    // The v4 result file: every character this run resolves (any outcome change)
+    // is buffered here and the whole slot object is overwritten periodically —
+    // `checkpointEvery` resolved characters — and once more on the clean stop
+    // below. `resultsAtLastFlush` tracks what is already durable so the final
+    // flush is skipped when a periodic one already caught up.
+    const results: SnapshotCharacter[] = [];
+    let resultsAtLastFlush = 0;
+    const checkpointEvery = this.config.resultCheckpointEvery ?? DEFAULT_RESULT_CHECKPOINT_EVERY;
+    const checkpointResults = async (): Promise<void> => {
+      if (results.length - resultsAtLastFlush < checkpointEvery) return;
+      await this.flushResults(manifest, results);
+      resultsAtLastFlush = results.length;
+    };
+
     for (const chunkIndex of assigned) {
       const chunk = ownedByIndex.get(chunkIndex);
       if (!chunk) continue;
@@ -199,7 +248,7 @@ export class Worker {
         break;
       }
 
-      const visit = await this.workChunk(manifest, chunk, runStart);
+      const visit = await this.workChunk(manifest, chunk, runStart, results, checkpointResults);
       requests += visit.requests;
       shardsWritten += visit.shardsWritten;
       if (visit.resolved) chunksResolved += 1;
@@ -209,6 +258,10 @@ export class Worker {
         break;
       }
     }
+
+    // Final result checkpoint on the clean stop: the slot object reflects every
+    // character resolved this run (skipped when a periodic flush already did).
+    if (results.length > resultsAtLastFlush) await this.flushResults(manifest, results);
 
     // Every clean stop ends this slot's job for the fire, so every one counts
     // toward the early-stop quorum — not just a drained assignment. (A wave
@@ -236,6 +289,8 @@ export class Worker {
     manifest: SnapshotManifest,
     chunk: SnapshotChunk,
     runStart: number,
+    results: SnapshotCharacter[],
+    checkpointResults: () => Promise<void>,
   ): Promise<{
     requests: number;
     shardsWritten: number;
@@ -269,6 +324,7 @@ export class Worker {
       this.log(
         `chunk ${chunk.chunkIndex}: fetching #${entry.rank} ${entry.account}/${entry.character}`,
       );
+      const before = { outcome: entry.outcome, attempts: entry.attempts };
       const result = await resolveCharacter(entry, this.config.maxAttempts, {
         clock: this.deps.clock,
         characterSource: this.deps.characterSource,
@@ -279,6 +335,14 @@ export class Worker {
       });
       requests += result.requests;
       if (result.record !== undefined) records.push(result.record);
+      // Mirror the resolution into the v4 result file whenever this attempt
+      // moved the character (a new terminal outcome, or a burned retry attempt).
+      // A pure rate-limit/stall leaves it unchanged and unrecorded — it stays
+      // workable for a later run, exactly as in the chunk it was skipped from.
+      if (entry.outcome !== before.outcome || entry.attempts !== before.attempts) {
+        results.push(toResultLine(entry, result.record));
+        await checkpointResults();
+      }
       if (result.deferred !== undefined) {
         // A stall guard tripped: sleeping would idle the runner for nothing
         // (past the budget) or for a saturated long window (>= maxWaitMillis).
@@ -341,6 +405,25 @@ export class Worker {
     );
   }
 
+  /**
+   * Overwrite this slot's single result object with the whole run so far. A
+   * full put (atomic on R2), single writer by construction — no other slot ever
+   * writes this `w<NN>` key — so a periodic checkpoint just re-puts the grown
+   * buffer, and a resumed/failed run's stale file is harmlessly replaced.
+   */
+  private async flushResults(
+    manifest: SnapshotManifest,
+    results: readonly SnapshotCharacter[],
+  ): Promise<void> {
+    await writeWorkerResults(
+      this.deps.objectStore,
+      manifest.league,
+      manifest.snapshotId,
+      this.config.workerIndex,
+      results,
+    );
+  }
+
   private summarize(
     stopReason: WorkerStopReason,
     assignedChunks: number,
@@ -359,4 +442,30 @@ export class Worker {
       outcomes,
     };
   }
+}
+
+/**
+ * Build one v4 state line from a just-resolved chunk entry. Copies the queued
+ * identity + the outcome/attempts the resolution wrote in place; for an `ok`
+ * character it also inlines the raw payloads from `resolveCharacter`'s record
+ * (`items` → `characterData`, `passives` → `passiveTree`), matching
+ * `SnapshotCharacter`. Non-`ok` lines carry no payloads (there are none).
+ */
+function toResultLine(entry: QueuedCharacter, record: unknown): SnapshotCharacter {
+  const line: SnapshotCharacter = {
+    rank: entry.rank,
+    account: entry.account,
+    character: entry.character,
+    class: entry.class,
+    level: entry.level,
+    outcome: entry.outcome,
+    attempts: entry.attempts,
+    ...(entry.fetchedAt !== undefined ? { fetchedAt: entry.fetchedAt } : {}),
+  };
+  if (record !== undefined) {
+    const raw = record as { items?: unknown; passives?: unknown };
+    line.characterData = raw.items;
+    line.passiveTree = raw.passives;
+  }
+  return line;
 }

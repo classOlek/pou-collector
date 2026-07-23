@@ -49,6 +49,13 @@ export interface RunConfig {
   /** Cooldown after an abort before a fresh snapshot is attempted. */
   abortCooldownHours: number;
   /**
+   * How often (in resolved characters) a worker overwrites its transient result
+   * object — the v4 crash-loss bound (a runner dying mid-run forfeits at most
+   * this many fetches). Worker-only; the coordinator/finalize ignore it. Unset
+   * falls back to the worker's built-in default.
+   */
+  resultCheckpointEvery?: number;
+  /**
    * How long a shared per-IP pace file (state/<league>/ips/<ip>.json) survives
    * after its last write before finalize's sweep reaps it. Must exceed GGG's
    * longest rate-limit window (~2 h): past that horizon the file models an empty

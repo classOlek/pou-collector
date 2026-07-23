@@ -167,6 +167,7 @@ export function makeRunHarness(opts: RunHarnessOptions) {
         runId,
         earlyStopQuorum: config.earlyStopQuorum,
         quorumCheckIntervalMillis: 0,
+        resultCheckpointEvery: config.resultCheckpointEvery,
       },
       {
         clock,

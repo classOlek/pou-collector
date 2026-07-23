@@ -14,7 +14,7 @@ import type { HttpClient } from '../sources/types.js';
 import { workerDonePath, type WorkerDoneMarker } from './worker-quorum.js';
 import { COLLECT_CRON_GAP_MS, LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';
-import { readAllShards, tallyOutcomes } from '../../test/helpers.js';
+import { readAllShards, readWorkerResult, tallyOutcomes } from '../../test/helpers.js';
 
 describe('assignedChunkIndices (the no-shared-chunk guarantee)', () => {
   it('partitions pending chunks disjointly and completely across workers', () => {
@@ -531,6 +531,113 @@ describe('Worker chunk processing', () => {
     for (const c of resolved) {
       expect(h.api.itemCalls.get(`${c.account}/${c.character}`)).toBe(1);
     }
+  });
+
+  it('mirrors resolved characters into its own v4 result file with raw payloads inline', async () => {
+    const entries = [
+      entry('ok0', { kind: 'ok' }),
+      entry('ok1', { kind: 'ok' }),
+      entry('priv', { kind: 'private' }),
+      entry('dead', { kind: 'dead' }),
+    ];
+    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
+    await h.createFire();
+
+    const summary = await h.newWorker(0).runOnce();
+    expect(summary.stopReason).toBe('assigned_drained');
+
+    // The worker wrote its single result object (one NDJSON line per character
+    // it resolved this run), keyed by identity.
+    const results = await readWorkerResult(h.objectStore, LEAGUE, 'snap-fixed', 0);
+    const byId = new Map((results ?? []).map((r) => [`${r.account}/${r.character}`, r]));
+    expect(byId.size).toBe(4);
+
+    // `ok` lines carry the raw items/passives inline (the state file is the raw);
+    // non-`ok` lines carry no payloads.
+    const ok0 = byId.get('acct-ok0/char-ok0');
+    expect(ok0?.outcome).toBe('ok');
+    expect(ok0?.characterData).toBeDefined();
+    expect(ok0?.passiveTree).toBeDefined();
+    expect(ok0?.fetchedAt).toBeDefined();
+
+    const priv = byId.get('acct-priv/char-priv');
+    expect(priv?.outcome).toBe('private');
+    expect(priv?.characterData).toBeUndefined();
+    expect(priv?.passiveTree).toBeUndefined();
+    expect(byId.get('acct-dead/char-dead')?.outcome).toBe('dead');
+
+    // The result identities match the chunk resolutions exactly (single writer,
+    // no double-fetch): every ok character was fetched once.
+    expect(h.api.itemCalls.get('acct-ok0/char-ok0')).toBe(1);
+  });
+
+  it('partitions result lines across slots — union covers every resolved character once', async () => {
+    const entries = buildLadder(20);
+    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
+    await h.createFire();
+
+    await h.newWorker(0).runOnce();
+    await h.newWorker(1).runOnce();
+
+    const r0 = (await readWorkerResult(h.objectStore, LEAGUE, 'snap-fixed', 0)) ?? [];
+    const r1 = (await readWorkerResult(h.objectStore, LEAGUE, 'snap-fixed', 1)) ?? [];
+    const ids0 = r0.map((r) => `${r.account}/${r.character}`);
+    const ids1 = r1.map((r) => `${r.account}/${r.character}`);
+
+    // Disjoint (no identity in both files) and complete (all 20 resolved once).
+    expect(ids0.filter((id) => ids1.includes(id))).toEqual([]);
+    expect(new Set([...ids0, ...ids1]).size).toBe(20);
+    expect([...r0, ...r1].every((r) => r.outcome === 'ok')).toBe(true);
+  });
+
+  it('keeps the final partial result file when a run stops on the budget', async () => {
+    const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({
+      entries,
+      config: { chunkSize: 10, workerCount: 1, maxRunMillis: 20_000 },
+    });
+    await h.createFire();
+
+    const summary = await h.newWorker(0).runOnce();
+    expect(summary.stopReason).toBe('budget_exhausted');
+
+    // The clean stop flushed a final result file holding exactly the characters
+    // this partial run resolved (default checkpoint cadence was never reached).
+    const results = (await readWorkerResult(h.objectStore, LEAGUE, 'snap-fixed', 0)) ?? [];
+    expect(results.length).toBeGreaterThan(0);
+    expect(results.length).toBeLessThan(10);
+    expect(results.every((r) => r.outcome === 'ok')).toBe(true);
+    const chunkOk = (await new ChunkStore(h.objectStore).load(LEAGUE, 'snap-fixed', 0)).characters
+      .filter((c) => c.outcome === 'ok')
+      .map((c) => `${c.account}/${c.character}`)
+      .sort();
+    expect(results.map((r) => `${r.account}/${r.character}`).sort()).toEqual(chunkOk);
+  });
+
+  it('checkpoints the result file periodically so a mid-run crash forfeits few fetches', async () => {
+    const entries = Array.from({ length: 5 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
+    const h = makeRunHarness({
+      entries,
+      config: { chunkSize: 5, workerCount: 1, resultCheckpointEvery: 1 },
+    });
+    await h.createFire();
+
+    // Crash (the client throws) on the 5th call — after char 0 and char 1 have
+    // each resolved (2 calls apiece) and, with cadence 1, been flushed.
+    let calls = 0;
+    const client: HttpClient = (req) => {
+      calls += 1;
+      if (calls === 5) throw new Error('runner died mid-fetch');
+      return h.api.client(req);
+    };
+
+    await expect(h.newWorker(0, client).runOnce()).rejects.toThrow('runner died mid-fetch');
+
+    // The periodic checkpoints made the first two resolutions durable, so the
+    // crash forfeits only the in-flight character's fetch — not the whole run.
+    const results = (await readWorkerResult(h.objectStore, LEAGUE, 'snap-fixed', 0)) ?? [];
+    expect(results).toHaveLength(2);
+    expect(results.every((r) => r.outcome === 'ok' && r.characterData !== undefined)).toBe(true);
   });
 
   it('does nothing when no snapshot is collecting', async () => {
