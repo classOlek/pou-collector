@@ -123,10 +123,9 @@ export interface TransformSummary {
   /**
    * Raw objects deleted on the final publish: the snapshot's single state file
    * plus any lingering per-worker result files (the v4 raw). 0 on an incremental
-   * publish, which keeps the state file. (Named `rawShardsDeleted` from the
-   * chunk-shard era; Phase 7 renames the display wording.)
+   * publish, which keeps the state file.
    */
-  rawShardsDeleted: number;
+  stateFilesDeleted: number;
 }
 
 /**
@@ -343,7 +342,7 @@ export async function runTransform(
     // validated publish (the state file IS the raw). An incremental publish
     // keeps the state file AND the checkpoint — the next pass reworks the growing
     // `ok` set and republishes in place.
-    let rawShardsDeleted = 0;
+    let stateFilesDeleted = 0;
     if (config.complete) {
       const published: SnapshotManifest = {
         ...manifest,
@@ -354,7 +353,7 @@ export async function runTransform(
       const resultKeys = await listKeys(deps.objectStore, workerResultPrefix(league, snapshotId));
       await mapLimit(resultKeys, IO_CONCURRENCY, (key) => deps.objectStore.delete(key));
       await deps.objectStore.delete(snapshotStatePath(league, snapshotId));
-      rawShardsDeleted = resultKeys.length + 1;
+      stateFilesDeleted = resultKeys.length + 1;
     }
 
     return {
@@ -370,7 +369,7 @@ export async function runTransform(
         AggregateKind,
         number
       >,
-      rawShardsDeleted,
+      stateFilesDeleted,
     };
   } finally {
     await rm(workDir, { recursive: true, force: true });

@@ -68,10 +68,10 @@ const createSummary: CreateSummary = {
 const workerSummary: WorkerSummary = {
   workerIndex: 2,
   stopReason: 'budget_exhausted',
-  assignedChunks: 79,
-  chunksResolved: 11,
+  assignedCharacters: 79,
+  charactersResolved: 11,
   requests: 1100,
-  shardsWritten: 11,
+  resultFlushes: 11,
   outcomes: { pending: 3000, ok: 480, private: 15, dead: 5, retryable: 2, skipped: 0 },
 };
 
@@ -89,7 +89,7 @@ const finalizeSummary: FinalizeSummary = {
     characterCount: 3600,
     detailBytes: { characters: 1000, items: 2000 },
     aggregateRows: { class_distribution: 12 },
-    rawShardsDeleted: 0,
+    stateFilesDeleted: 0,
   },
 };
 
@@ -234,7 +234,7 @@ describe('renderWorkerSummary / renderFinalizeSummary', () => {
   it('surfaces the worker slot, chunk progress and outcome tallies', () => {
     const rendered = renderWorkerSummary(workerSummary, seedMemory);
     expect(rendered.markdown).toContain('Worker w2');
-    expect(rendered.outputs.chunks_resolved).toBe('11');
+    expect(rendered.outputs.characters_resolved).toBe('11');
     expect(rendered.markdown).toContain('480');
     expect(rendered.json.kind).toBe('worker');
   });

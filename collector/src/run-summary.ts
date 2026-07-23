@@ -282,19 +282,19 @@ export function renderWorkerSummary(
     `## Worker w${summary.workerIndex}`,
     '',
     table(
-      ['stop reason', 'assigned chunks', 'chunks resolved', 'requests', 'shards'],
+      ['stop reason', 'assigned', 'resolved', 'requests', 'result flushes'],
       [
         [
           summary.stopReason,
-          summary.assignedChunks,
-          summary.chunksResolved,
+          summary.assignedCharacters,
+          summary.charactersResolved,
           summary.requests,
-          summary.shardsWritten,
+          summary.resultFlushes,
         ],
       ],
     ),
     '',
-    '### Outcomes across touched chunks',
+    '### Outcomes across resolved characters',
     table(
       ['ok', 'private', 'dead', 'retryable', 'pending', 'skipped'],
       [[o.ok, o.private, o.dead, o.retryable, o.pending, o.skipped]],
@@ -309,16 +309,16 @@ export function renderWorkerSummary(
     outputs: {
       stop_reason: summary.stopReason,
       requests: String(summary.requests),
-      chunks_resolved: String(summary.chunksResolved),
+      characters_resolved: String(summary.charactersResolved),
     },
     json: {
       kind: 'worker',
       workerIndex: summary.workerIndex,
       stopReason: summary.stopReason,
-      assignedChunks: summary.assignedChunks,
-      chunksResolved: summary.chunksResolved,
+      assignedCharacters: summary.assignedCharacters,
+      charactersResolved: summary.charactersResolved,
       requests: summary.requests,
-      shardsWritten: summary.shardsWritten,
+      resultFlushes: summary.resultFlushes,
       outcomes: summary.outcomes,
       penaltyUntil: memory.penaltyUntil,
     },
@@ -374,7 +374,7 @@ function renderTransformBlock(summary: TransformSummary): string {
         'dead',
         'pending',
         'skipped',
-        'raw deleted',
+        'state deleted',
       ],
       [
         [
@@ -386,7 +386,7 @@ function renderTransformBlock(summary: TransformSummary): string {
           summary.coverage.dead,
           summary.pendingCount,
           summary.skippedCount,
-          summary.rawShardsDeleted,
+          summary.stateFilesDeleted,
         ],
       ],
     ),

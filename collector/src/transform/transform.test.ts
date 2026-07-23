@@ -232,7 +232,7 @@ describe('runTransform golden file', () => {
     expect((await deps.checkpointStore.load(LEAGUE))?.phase).toBe('published');
     // The state file (the v4 raw) is deleted only after a validated publish.
     expect(store.keys()).not.toContain(snapshotStatePath(LEAGUE, SNAP));
-    expect(summary.rawShardsDeleted).toBe(1); // the one state file
+    expect(summary.stateFilesDeleted).toBe(1); // the one state file
   });
 
   it('dedupes a character with two state lines, keeping the latest fetchedAt', async () => {
@@ -332,7 +332,7 @@ describe('runTransform incremental (incomplete) publish', () => {
     expect(summary.complete).toBe(false);
     expect(summary.characterCount).toBe(3);
     expect(summary.pendingCount).toBe(4);
-    expect(summary.rawShardsDeleted).toBe(0);
+    expect(summary.stateFilesDeleted).toBe(0);
 
     // The snapshot is visible immediately, marked incomplete.
     const meta = await readJson<SnapshotMeta>(store, snapshotMetaPath(LEAGUE, SNAP));

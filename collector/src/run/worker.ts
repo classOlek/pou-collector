@@ -127,24 +127,16 @@ export type WorkerStopReason =
 export interface WorkerSummary {
   workerIndex: number;
   stopReason: WorkerStopReason;
-  /**
-   * Pending characters this slot owned this run. (Named `assignedChunks` from
-   * the chunk-model era; it is a character count now — Phase 7 renames the
-   * display wording.)
-   */
-  assignedChunks: number;
-  /**
-   * Characters this run brought to a terminal outcome (ok/private/dead/skipped).
-   * (Named `chunksResolved` from the chunk-model era; Phase 7 renames it.)
-   */
-  chunksResolved: number;
+  /** Pending characters this slot owned this run (the state-file ordinals it self-selected). */
+  assignedCharacters: number;
+  /** Characters this run brought to a terminal outcome (ok/private/dead/skipped). */
+  charactersResolved: number;
   requests: number;
   /**
-   * Result-file checkpoints written this run (the periodic overwrites plus the
-   * final flush). (Named `shardsWritten` from the chunk-model era — there are no
-   * raw shards now; Phase 7 renames it.)
+   * Result-file checkpoints written this run — the periodic overwrites of this
+   * slot's single `w<NN>` result object plus the final flush.
    */
-  shardsWritten: number;
+  resultFlushes: number;
   /** Outcome tally across the characters this worker resolved this run. */
   outcomes: OutcomeTally;
 }
@@ -327,19 +319,19 @@ export class Worker {
 
   private summarize(
     stopReason: WorkerStopReason,
-    assignedChunks: number,
-    chunksResolved: number,
+    assignedCharacters: number,
+    charactersResolved: number,
     requests: number,
-    shardsWritten: number,
+    resultFlushes: number,
     resolved: readonly SnapshotCharacter[],
   ): WorkerSummary {
     return {
       workerIndex: this.config.workerIndex,
       stopReason,
-      assignedChunks,
-      chunksResolved,
+      assignedCharacters,
+      charactersResolved,
       requests,
-      shardsWritten,
+      resultFlushes,
       outcomes: tallyOutcomes(resolved),
     };
   }
