@@ -139,22 +139,47 @@ The replacement for `chunks/chunk-store.ts`, built around streams:
 - Coordinator: `has_work` from the manifest tally exactly as today; the
   `has_work` / `workers` output contract (`run-summary.ts` keys, CI-asserted)
   does not change. No state-file read on the idle path.
-- Worker: stream the state file once at start; keep only owned pending
-  identities (deterministic split above). Resolve characters via the untouched
-  `resolve-character.ts` / rate-limit stack. Buffer results and **overwrite its
-  single result object periodically** and on every clean stop (budget,
-  rate-limit stall, quorum, drained). Early-stop quorum, limiter persistence,
-  per-IP pace state: unchanged.
+- Worker: resolve characters via the untouched `resolve-character.ts` /
+  rate-limit stack, then **also** buffer each resolution into this slot's single
+  transient result object and **overwrite it periodically** and on every clean
+  stop (budget, rate-limit stall, quorum, drained). Early-stop quorum, limiter
+  persistence, per-IP pace state: unchanged. **The work split stays chunk-based
+  in this phase** (`ownedChunkIndices`/`pendingChunkIndices`) — the state-ordinal
+  split (`pendingIdentities`/`assignedTo`, added in Phase 2) is deferred to
+  Phase 5 and lands *together with* the finalize→result-based switch, not
+  separately. Moving it here — while finalize still rolls up chunks — would
+  either break the chunk-based finalize or put two writers on one chunk (hard
+  rule #3). So in Phase 4 the worker dual-writes: chunk/shard checkpoint (still
+  the authoritative queue finalize reads) **and** the result file (inert until
+  Phase 5).
 - A worker still never writes the manifest, the state file, or another slot's
   objects.
 
-### Phase 5 — finalize & transform (`run/finalize.ts`, `transform/`)
+### Phase 5 — finalize, worker split & transform (`run/finalize.ts`, `run/worker.ts`, `transform/`)
 
 - Finalize: list the results prefix → `mergeResults` into the state file →
   recompute tally → write manifest → **only then** delete result files.
   A crash before the delete re-merges idempotently next fire; a crash before
   the manifest write re-merges too (merge is the recovery path, no special
   cases). Abort path discards as in Phase 3.
+- Worker split → state ordinals, **in the same phase, not deferred to Phase 6**.
+  The moment finalize stops rolling up chunks and instead merges the result
+  files, the worker must stop deriving its work from chunks and switch to the
+  state-ordinal split (`pendingIdentities`/`assignedTo` streamed off the state
+  file). These two changes are a single atomic switch — landing them a phase
+  apart opens a data-loss window. Recovery invariant (design decision 3, risk
+  row "crash before delete re-merges idempotently next fire"): finalize's crash
+  safety only holds if a worker re-derives its pending work from the **same**
+  state file finalize merges into. Concretely, if workers still derived from
+  chunks after this switch: a worker resolves A,B (chunk saved terminal, `w<NN>`
+  flushed with A,B); finalize crashes *before* `mergeResults`; the next fire's
+  chunk-derived worker sees A,B already terminal in its chunks, skips them,
+  resolves C,D, and **overwrites** `w<NN>` with only C,D — A,B are now absent
+  from both the (never-merged) state file and the (overwritten) result file, and
+  are silently lost. A state-derived worker instead finds A,B still `pending` in
+  the state file (finalize never merged them), re-resolves them, and they
+  re-merge idempotently. Chunk removal itself stays in Phase 6; only the
+  worker's *split source* moves here.
 - Transform: replace the raw-shard download/gunzip stage with "stream state
   file, emit `outcome == 'ok'` lines to the temp NDJSON DuckDB ingests" — the
   SQL, aggregates, validation gate, meta, and index logic are untouched.

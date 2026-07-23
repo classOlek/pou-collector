@@ -30,10 +30,21 @@
  * (design decision 4). Nothing consumes it yet: finalize (Phase 5) merges the
  * result files into the state file and sweeps them; until then the chunk files
  * stay the authoritative queue that finalize rolls up, so BOTH are written.
- * The chunk-based ownership above is likewise kept until Phase 6 retires the
- * chunk model and moves the split onto the state file's line ordinals
- * (`pendingIdentities`/`assignedTo`) — doing so now would either break the
- * still-chunk-based finalize or put two writers on one chunk.
+ * The chunk-based ownership above is likewise kept for now: the worker's split
+ * moves onto the state file's line ordinals (`pendingIdentities`/`assignedTo`)
+ * in Phase 5, coupled to the SAME change that makes finalize result-based —
+ * they land together, not one phase apart. Doing it EARLIER would either break
+ * the still-chunk-based finalize or put two writers on one chunk. Doing it
+ * LATER — leaving workers deriving from chunks after finalize consumes the
+ * result files — would break Phase 5's recovery invariant: a finalize that
+ * crashed before merging w<NN> into the state file would have that result file
+ * overwritten on the next fire, because a chunk-derived worker sees the chunk
+ * entries already terminal, skips them, and re-puts w<NN> without them, so
+ * those chunk-terminal results vanish from both the state file (never merged)
+ * and the result file (overwritten). A state-derived worker instead re-derives
+ * that still-pending work from the very state file finalize merges into, so the
+ * results reappear and re-merge idempotently. Phase 6 only deletes the
+ * then-dead chunk code.
  *
  * A worker never writes the manifest, the roster, another slot's state or
  * another worker's chunks/results — every object keeps exactly one writer (its
