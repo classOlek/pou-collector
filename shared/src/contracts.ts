@@ -22,7 +22,14 @@
 // types and the manifest's chunk bookkeeping (chunkSize/chunkCount/
 // resolvedChunks) are gone (docs/PLAN_SNAPSHOT_STATE_REWORK.md §6); the
 // published snapshot formats (meta / agg / detail / index) are unchanged.
-export const SCHEMA_VERSION = 5;
+// v6: stable per-item key. Several items on one character share an `inventoryId`
+// (all flasks = 'Flask', all jewels = 'PassiveJewels'), so keying `item_mods` on
+// `inventoryId` pooled every flask/jewel's mods across the slot. Each item now
+// gets a stable per-item `item_id` (`character_key || '#' || <array ordinal>`);
+// `items` carries it and `item_mods.item_key` now holds that `item_id` (no longer
+// the `inventoryId`), so a mod joins to the exact item it belongs to. `slot` stays
+// on `items` (still the `inventoryId`) for display/grouping.
+export const SCHEMA_VERSION = 6;
 
 /**
  * Outcome of resolving one queued character. 'pending' = not computed yet;

@@ -43,6 +43,10 @@ export const DETAIL_TABLE_SCHEMA: readonly DetailTableSchema[] = [
     name: 'items',
     columns: [
       { name: 'character_key', type: 'VARCHAR' },
+      // v6: stable per-item id (`character_key || '#' || <items-array ordinal>`),
+      // unique per (character, item). `item_mods.item_key` carries this same value
+      // so mods join to the exact item. `slot` (below) stays the `inventoryId`.
+      { name: 'item_id', type: 'VARCHAR' },
       { name: 'slot', type: 'VARCHAR' },
       { name: 'name', type: 'VARCHAR' },
       { name: 'base_type', type: 'VARCHAR' },
@@ -70,6 +74,9 @@ export const DETAIL_TABLE_SCHEMA: readonly DetailTableSchema[] = [
     name: 'item_mods',
     columns: [
       { name: 'character_key', type: 'VARCHAR' },
+      // v6: carries the owning item's per-item `item_id` (see items.item_id) — no
+      // longer the `inventoryId`. Join `item_mods.item_key = items.item_id` to
+      // attribute each mod to the exact item (fixes flask/jewel mod pooling).
       { name: 'item_key', type: 'VARCHAR' },
       { name: 'mod_domain', type: 'VARCHAR' },
       { name: 'mod_text', type: 'VARCHAR' },

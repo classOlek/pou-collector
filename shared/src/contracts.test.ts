@@ -8,8 +8,15 @@ import {
   isInFlight,
   pendingOfTally,
   percentage,
+  SCHEMA_VERSION,
   tallyOutcomes,
 } from './contracts.js';
+
+describe('SCHEMA_VERSION', () => {
+  it('is v6 (stable per-item key)', () => {
+    expect(SCHEMA_VERSION).toBe(6);
+  });
+});
 
 describe('percentage (shared by collector transform and web)', () => {
   it('is a 0–100 share rounded to the requested decimals', () => {
