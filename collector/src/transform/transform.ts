@@ -81,7 +81,9 @@ import {
   createItemModsSql,
   createItemRowsSql,
   createItemsSql,
+  createMasteriesSql,
   createPassivesSql,
+  createRawSql,
   createSkillsSql,
   createTreeNodesSql,
 } from './sql.js';
@@ -233,6 +235,9 @@ export async function runTransform(
       await db.run(createItemModsSql());
       await db.run(createSkillsSql());
       await db.run(createPassivesSql());
+      await db.run(createMasteriesSql());
+      // `raw` reads chars' JSON columns, so build it before the drop below.
+      await db.run(createRawSql());
 
       // Free the big JSON source tables before aggregation (normalized tables hold).
       await db.dropTable('item_rows');

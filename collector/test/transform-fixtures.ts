@@ -51,6 +51,23 @@ export interface CharSpec {
   /** Passive node hashes (mix of normal + keystone hashes from the fixture tree). */
   nodes?: number[];
   fetchedAt?: string;
+  /**
+   * Opt-in cluster jewel (v5). Adds a `PassiveJewels` item to the gear, allocates
+   * its `nodes` into `passiveTree.hashes_ex`, and publishes their names/stats under
+   * `jewel_data[socketHash].subgraph.nodes` — the exact shape the transform resolves.
+   */
+  cluster?: {
+    socketHash: number;
+    name?: string;
+    baseType?: string;
+    quality?: number;
+    reqLevel?: number;
+    explicitMods?: string[];
+    fracturedMods?: string[];
+    nodes: { hash: number; name: string; stats?: string[]; isNotable?: boolean }[];
+  };
+  /** Opt-in chosen masteries (v5): mastery node hash → chosen effect hash. */
+  masteries?: Record<number, number>;
 }
 
 /** Build one raw shard record (the exact shape the collector's sink writes). */
@@ -97,6 +114,52 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
     sockets: [{ group: 0, attr: 'S' }],
     socketedItems: [],
   };
+  // v5: an optional cluster jewel, shaped like a real GGG capture — a
+  // PassiveJewels item in the gear plus its expansion nodes in `hashes_ex` and
+  // their names/stats in `jewel_data[socket].subgraph.nodes`.
+  const clusterItem = spec.cluster
+    ? [
+        {
+          inventoryId: 'PassiveJewels',
+          name: spec.cluster.name ?? 'Foe Glisten',
+          typeLine: spec.cluster.baseType ?? 'Large Cluster Jewel',
+          baseType: spec.cluster.baseType ?? 'Large Cluster Jewel',
+          rarity: 'Rare',
+          ilvl: 84,
+          corrupted: false,
+          identified: true,
+          ...(spec.cluster.fracturedMods ? { fractured: true } : {}),
+          explicitMods: spec.cluster.explicitMods ?? ['Adds 3 Passive Skills'],
+          ...(spec.cluster.fracturedMods ? { fracturedMods: spec.cluster.fracturedMods } : {}),
+          properties: [{ name: 'Quality', values: [[`+${spec.cluster.quality ?? 0}%`, 1]] }],
+          requirements: [{ name: 'Level', values: [[String(spec.cluster.reqLevel ?? 54), 0]] }],
+          sockets: [],
+        },
+      ]
+    : [];
+  const jewelData = spec.cluster
+    ? {
+        [String(spec.cluster.socketHash)]: {
+          type: 'JewelPassiveTreeExpansionLarge',
+          radius: 3,
+          subgraph: {
+            groups: {},
+            nodes: Object.fromEntries(
+              spec.cluster.nodes.map((n) => [
+                String(n.hash),
+                {
+                  skill: n.hash,
+                  name: n.name,
+                  isNotable: n.isNotable ?? false,
+                  stats: n.stats ?? [],
+                },
+              ]),
+            ),
+          },
+        },
+      }
+    : {};
+
   return {
     rank: spec.rank,
     account: spec.account,
@@ -113,9 +176,15 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
         level: spec.level ?? 100,
         experience: 4250334444,
       },
-      items: [bodyArmour, weapon],
+      items: [bodyArmour, weapon, ...clusterItem],
     },
-    passives: { hashes: spec.nodes ?? [123], hashes_ex: [], items: [], jewel_data: {} },
+    passives: {
+      hashes: spec.nodes ?? [123],
+      hashes_ex: spec.cluster ? spec.cluster.nodes.map((n) => n.hash) : [],
+      items: [],
+      jewel_data: jewelData,
+      mastery_effects: spec.masteries ?? {},
+    },
   };
 }
 

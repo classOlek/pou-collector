@@ -22,7 +22,9 @@ import {
   createItemModsSql,
   createItemRowsSql,
   createItemsSql,
+  createMasteriesSql,
   createPassivesSql,
+  createRawSql,
   createSkillsSql,
   createTreeNodesSql,
   DETAIL_TABLES,
@@ -47,6 +49,8 @@ beforeAll(async () => {
   await db.run(createItemModsSql());
   await db.run(createSkillsSql());
   await db.run(createPassivesSql());
+  await db.run(createMasteriesSql());
+  await db.run(createRawSql());
 });
 
 afterAll(async () => {

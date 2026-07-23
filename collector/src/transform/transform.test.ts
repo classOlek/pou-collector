@@ -304,6 +304,116 @@ describe('runTransform golden file', () => {
   });
 });
 
+describe('runTransform v5 enrichment (cluster jewels, extra fields, raw net)', () => {
+  it('captures cluster jewels, resolves their nodes, and keeps a raw safety copy', async () => {
+    const store = new MemoryObjectStore();
+    const spec: CharSpec = {
+      rank: 1,
+      account: 'z',
+      character: 'Z',
+      class: 'Juggernaut',
+      mainSkill: 'Cyclone',
+      unique: 'Brood Star',
+      nodes: [123, 4271], // base-tree hashes (incl. a keystone from the fixture tree)
+      cluster: {
+        socketHash: 53960,
+        name: 'Foe Glisten',
+        baseType: 'Large Cluster Jewel',
+        quality: 12,
+        reqLevel: 54,
+        explicitMods: ['Adds 3 Passive Skills', '1 Added Passive Skill is Feast of Flesh'],
+        fracturedMods: ['Adds 2 Passive Skills'],
+        nodes: [
+          {
+            hash: 900001,
+            name: 'Feast of Flesh',
+            stats: ['Notable cluster stat'],
+            isNotable: true,
+          },
+          { hash: 900002, name: 'Cluster Small', stats: ['Small cluster stat'] },
+        ],
+      },
+      masteries: { 4271: 88001 },
+    };
+    await seedState(store, LEAGUE, SNAP, [spec]);
+    const manifest = transformingManifest(LEAGUE, SNAP, [spec]);
+    const { deps } = makeDeps(store);
+
+    await runTransform(manifest, { treeVersion: '3.25-test', complete: true }, deps);
+
+    // The cluster jewel is an item (inventoryId PassiveJewels) with v5 detail.
+    const jewel = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'items'),
+      'SELECT base_type, quality, req_level, identified, sockets FROM read_parquet($FILE) ' +
+        "WHERE slot = 'PassiveJewels'",
+    );
+    expect(jewel).toHaveLength(1);
+    expect(jewel[0]?.[0]).toBe('Large Cluster Jewel');
+    expect(Number(jewel[0]?.[1])).toBe(12); // quality
+    expect(Number(jewel[0]?.[2])).toBe(54); // req_level
+    expect(jewel[0]?.[3]).toBe(true); // identified
+    expect(jewel[0]?.[4]).toBe('[]'); // sockets JSON text, lossless
+
+    // The jewel's explicit AND fractured mods land in item_mods (extra v5 domains).
+    const jewelMods = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'item_mods'),
+      "SELECT mod_domain, mod_text FROM read_parquet($FILE) WHERE item_key = 'PassiveJewels' " +
+        'ORDER BY mod_domain, mod_text',
+    );
+    expect(jewelMods.map((r) => [r[0], r[1]])).toEqual([
+      ['explicit', '1 Added Passive Skill is Feast of Flesh'],
+      ['explicit', 'Adds 3 Passive Skills'],
+      ['fractured', 'Adds 2 Passive Skills'],
+    ]);
+
+    // Cluster nodes resolve to name/stats/notability from jewel_data.subgraph.
+    const cluster = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'passives'),
+      'SELECT node_hash, node_name, is_notable, node_stats FROM read_parquet($FILE) ' +
+        "WHERE source = 'cluster' ORDER BY node_hash",
+    );
+    expect(cluster).toHaveLength(2);
+    expect(cluster[0]?.[1]).toBe('Feast of Flesh');
+    expect(cluster[0]?.[2]).toBe(true);
+    expect(cluster[0]?.[3]).toEqual(['Notable cluster stat']);
+    expect(cluster[1]?.[1]).toBe('Cluster Small');
+    expect(cluster[1]?.[2]).toBe(false);
+
+    // Base-tree nodes still carry source 'tree' (2 allocated) — nothing regressed.
+    const [[treeCount] = [0]] = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'passives'),
+      "SELECT count(*) FROM read_parquet($FILE) WHERE source = 'tree'",
+    );
+    expect(Number(treeCount)).toBe(2);
+
+    // The chosen mastery is captured (node hash → effect hash).
+    const masteries = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'masteries'),
+      'SELECT node_hash, effect_hash FROM read_parquet($FILE)',
+    );
+    expect(masteries).toHaveLength(1);
+    expect(Number(masteries[0]?.[0])).toBe(4271);
+    expect(Number(masteries[0]?.[1])).toBe(88001);
+
+    // The raw safety net holds the verbatim payloads for this character.
+    const raw = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'raw'),
+      'SELECT character_key, items, passives FROM read_parquet($FILE)',
+    );
+    expect(raw).toHaveLength(1);
+    expect(raw[0]?.[0]).toBe('z/Z');
+    // Nothing is skipped: fields the normalized tables omit survive verbatim here.
+    expect(String(raw[0]?.[1])).toContain('PassiveJewels');
+    expect(String(raw[0]?.[2])).toContain('jewel_data');
+  });
+});
+
 describe('runTransform incremental (incomplete) publish', () => {
   it('publishes collected-so-far data marked incomplete, keeping raw and the checkpoint', async () => {
     const store = new MemoryObjectStore();

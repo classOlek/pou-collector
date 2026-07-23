@@ -95,8 +95,23 @@ export function createCharactersSql(snapshotId: string): string {
     FROM chars ORDER BY rank;`;
 }
 
-/** One row per equipped item; `links` = size of the item's largest link group. */
+/**
+ * One row per item held in ANY inventory slot — worn gear AND the passive-tree
+ * jewels (`inventoryId = 'PassiveJewels'`, incl. cluster jewels): the only filter
+ * is a present `inventoryId`, nothing is slot-whitelisted. `links` = size of the
+ * item's largest link group. v5 adds the per-item detail the v4 columns dropped:
+ * `sockets` (the raw GGG sockets array as JSON text — colours + groups, lossless),
+ * `quality`/`req_level` (parsed from properties/requirements) and GGG's item flag
+ * booleans (absent => false).
+ */
 export function createItemsSql(): string {
+  const flag = (field: string): string =>
+    `coalesce(TRY_CAST(item->>'$.${field}' AS BOOLEAN), false)`;
+  // First value string of the first properties/requirements entry named `label`.
+  const firstValue = (field: string, label: string): string =>
+    `(SELECT e->'$.values'->0->>0
+        FROM unnest(CAST(coalesce(item->'$.${field}', '[]') AS JSON[])) AS et(e)
+        WHERE e->>'$.name' = ${sqlString(label)} LIMIT 1)`;
   return `CREATE TABLE items AS
     SELECT
       character_key,
@@ -116,12 +131,28 @@ export function createItemsSql(): string {
           FROM unnest(CAST(coalesce(item->'$.sockets', '[]') AS JSON[])) AS s(sock)
           GROUP BY sock->>'$.group'
         )
-      ), 0) AS INTEGER) AS links
+      ), 0) AS INTEGER) AS links,
+      -- v5: quality % and level requirement, parsed from the properties arrays.
+      TRY_CAST(regexp_extract(${firstValue('properties', 'Quality')}, '\\d+') AS INTEGER) AS quality,
+      -- sockets kept verbatim (JSON text) so colours + link groups survive intact.
+      CAST(item->'$.sockets' AS VARCHAR) AS sockets,
+      TRY_CAST(regexp_extract(${firstValue('requirements', 'Level')}, '\\d+') AS INTEGER) AS req_level,
+      ${flag('identified')} AS identified,
+      ${flag('fractured')} AS fractured,
+      ${flag('synthesised')} AS synthesised,
+      ${flag('mirrored')} AS mirrored,
+      ${flag('split')} AS split
     FROM item_rows
     WHERE item->>'$.inventoryId' IS NOT NULL;`;
 }
 
-/** One row per mod, tagged by domain (implicit / explicit / crafted / enchant). */
+/**
+ * One row per mod, tagged by domain. v5 widens coverage past the original four
+ * (implicit/explicit/crafted/enchant) to every flat string-array mod list GGG
+ * ships: `fractured`, `veiled`, `scourge`, and `utility` (flask action mods,
+ * previously dropped entirely). Each list is a VARCHAR[]; a missing list yields
+ * no rows. (Nested mod structures like `crucible` stay in the raw safety net.)
+ */
 export function createItemModsSql(): string {
   const domain = (field: string, label: string): string =>
     `SELECT character_key, item->>'$.inventoryId' AS item_key, ${sqlString(label)} AS mod_domain,
@@ -133,7 +164,15 @@ export function createItemModsSql(): string {
     UNION ALL
     ${domain('craftedMods', 'crafted')}
     UNION ALL
-    ${domain('enchantMods', 'enchant')};`;
+    ${domain('enchantMods', 'enchant')}
+    UNION ALL
+    ${domain('fracturedMods', 'fractured')}
+    UNION ALL
+    ${domain('veiledMods', 'veiled')}
+    UNION ALL
+    ${domain('scourgeMods', 'scourge')}
+    UNION ALL
+    ${domain('utilityMods', 'utility')};`;
 }
 
 /**
@@ -187,22 +226,107 @@ export function createSkillsSql(): string {
     FROM ranked;`;
 }
 
-/** One row per allocated passive, resolved against the tree (LEFT JOIN keeps unknowns). */
+/**
+ * One row per allocated passive. v5 unions the base tree (`$.hashes`, source
+ * `'tree'`, resolved against `tree_nodes`) with cluster / expansion-jewel nodes
+ * (`$.hashes_ex`, source `'cluster'`). Cluster nodes are NOT in the base tree —
+ * their names/stats live inside each jewel's `jewel_data[socket].subgraph.nodes`
+ * (keyed by node hash) — so `cluster_map` flattens every socket's subgraph and
+ * the cluster branch LEFT JOINs onto it. Both LEFT JOINs keep an allocated hash
+ * even when unresolved (NULL name), never dropping an allocation. `is_notable`
+ * flags cluster notables (always false for tree nodes; keystone-ness is the tree
+ * signal there).
+ */
 export function createPassivesSql(): string {
   return `CREATE TABLE passives AS
-    WITH p AS (
-      SELECT character_key, unnest(CAST(coalesce(passives->'$.hashes', '[]') AS BIGINT[])) AS node_hash
+    WITH tree_alloc AS (
+      SELECT character_key,
+        unnest(CAST(coalesce(passives->'$.hashes', '[]') AS BIGINT[])) AS node_hash
       FROM chars
+    ),
+    cluster_alloc AS (
+      SELECT character_key,
+        unnest(CAST(coalesce(passives->'$.hashes_ex', '[]') AS BIGINT[])) AS node_hash
+      FROM chars
+    ),
+    -- One row per (character, jewel socket): that socket's subgraph node object.
+    jewel_sockets AS (
+      SELECT c.character_key,
+        json_extract(json_extract(c.passives, '$.jewel_data'),
+          '$."' || sk.socket_key || '"')->'$.subgraph'->'$.nodes' AS nodes
+      FROM chars c,
+        unnest(coalesce(json_keys(json_extract(c.passives, '$.jewel_data')), [])) AS sk(socket_key)
+    ),
+    -- One row per cluster-generated node, resolved from the subgraph.
+    cluster_map AS (
+      SELECT js.character_key,
+        TRY_CAST(nk.node_key AS BIGINT) AS node_hash,
+        json_extract(js.nodes, '$."' || nk.node_key || '"') AS node
+      FROM jewel_sockets js,
+        unnest(coalesce(json_keys(js.nodes), [])) AS nk(node_key)
+      WHERE js.nodes IS NOT NULL
     )
-    SELECT p.character_key, p.node_hash,
+    SELECT ta.character_key, ta.node_hash,
       t.name AS node_name,
       coalesce(t.stats, []) AS node_stats,
-      coalesce(t.is_keystone, false) AS is_keystone
-    FROM p LEFT JOIN tree_nodes t ON p.node_hash = t.hash;`;
+      coalesce(t.is_keystone, false) AS is_keystone,
+      'tree' AS source,
+      false AS is_notable
+    FROM tree_alloc ta LEFT JOIN tree_nodes t ON ta.node_hash = t.hash
+    UNION ALL
+    SELECT ca.character_key, ca.node_hash,
+      cm.node->>'$.name' AS node_name,
+      CAST(coalesce(cm.node->'$.stats', '[]') AS VARCHAR[]) AS node_stats,
+      false AS is_keystone,
+      'cluster' AS source,
+      coalesce(TRY_CAST(cm.node->>'$.isNotable' AS BOOLEAN), false) AS is_notable
+    FROM cluster_alloc ca
+      LEFT JOIN cluster_map cm
+        ON ca.character_key = cm.character_key AND ca.node_hash = cm.node_hash;`;
 }
 
-/** All normalized detail tables, in dependency order. */
-export const DETAIL_TABLES = ['characters', 'items', 'item_mods', 'skills', 'passives'] as const;
+/**
+ * One row per chosen passive mastery. GGG's `mastery_effects` maps a mastery node
+ * hash → the chosen effect hash; this flattens that object so the CHOICE is never
+ * lost. `effect_stats` is left empty for now — the effect→stat text lives in the
+ * tree's mastery-effect table (not `tree_nodes`), so resolving it is a follow-up;
+ * the full `mastery_effects` object is preserved verbatim in the `raw` table.
+ */
+export function createMasteriesSql(): string {
+  return `CREATE TABLE masteries AS
+    SELECT c.character_key,
+      TRY_CAST(mk.node_key AS BIGINT) AS node_hash,
+      TRY_CAST(json_extract_string(json_extract(c.passives, '$.mastery_effects'),
+        '$."' || mk.node_key || '"') AS BIGINT) AS effect_hash,
+      CAST([] AS VARCHAR[]) AS effect_stats
+    FROM chars c,
+      unnest(coalesce(json_keys(json_extract(c.passives, '$.mastery_effects')), [])) AS mk(node_key);`;
+}
+
+/**
+ * The verbatim GGG payloads per character (items + passives responses as JSON
+ * text). The never-skip safety net: any field the normalized tables don't surface
+ * (nested crucible mods, socketed abyss jewels, incubators, full jewel_data …)
+ * is always recoverable here. Its own Parquet file, fetched only on demand.
+ */
+export function createRawSql(): string {
+  return `CREATE TABLE raw AS
+    SELECT character_key,
+      CAST(items AS VARCHAR) AS items,
+      CAST(passives AS VARCHAR) AS passives
+    FROM chars;`;
+}
+
+/** All normalized detail tables, in dependency order (must match DETAIL_TABLE_SCHEMA). */
+export const DETAIL_TABLES = [
+  'characters',
+  'items',
+  'item_mods',
+  'skills',
+  'passives',
+  'masteries',
+  'raw',
+] as const;
 export type DetailTable = (typeof DETAIL_TABLES)[number];
 
 export function copyToParquetSql(table: string, path: string): string {

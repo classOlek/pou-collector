@@ -22,7 +22,7 @@
 // types and the manifest's chunk bookkeeping (chunkSize/chunkCount/
 // resolvedChunks) are gone (docs/PLAN_SNAPSHOT_STATE_REWORK.md §6); the
 // published snapshot formats (meta / agg / detail / index) are unchanged.
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 /**
  * Outcome of resolving one queued character. 'pending' = not computed yet;
