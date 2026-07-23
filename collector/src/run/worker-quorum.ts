@@ -2,13 +2,13 @@
  * Worker completion detection (early-stop quorum).
  *
  * With N parallel workers a fire's wall clock is its SLOWEST worker: one
- * straggler with an unlucky assignment (dense chunks, throttled IP) can keep
- * finalize — and, via the shared concurrency group, the next cron fire —
+ * straggler with an unlucky assignment (a heavy run of characters, throttled IP)
+ * can keep finalize — and, via the shared concurrency group, the next cron fire —
  * waiting for many idle-runner minutes after its siblings finished. The fix
  * leans on resumability (hard rule #3): a straggler that stops early simply
- * checkpoints, its chunks stay pending, and the next fire's worker for the
- * same slot resumes them (ownership is stable by chunk index) with fresh
- * rate-limit windows.
+ * checkpoints, its assigned characters stay pending in the state file, and the
+ * next fire's worker for the same slot resumes them (ownership is stable by
+ * state-line ordinal) with fresh rate-limit windows.
  *
  * Mechanism, single-writer by construction:
  *  - a worker whose run ends — ANY clean stop: assignment drained, budget
@@ -118,7 +118,7 @@ export class QuorumMonitor {
       this.deps.log?.(
         `quorum: ${done}/${this.config.workerCount} workers finished this fire ` +
           `(threshold ${this.config.earlyStopQuorum}) — stopping early; ` +
-          `remaining chunks resume next fire`,
+          `remaining characters resume next fire`,
       );
     }
     return this.reached;

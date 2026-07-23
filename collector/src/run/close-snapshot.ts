@@ -3,10 +3,10 @@
  *
  * Every character still awaiting computation (pending/retryable) is marked
  * `skipped` — a terminal "deliberately not collected" outcome, distinct from
- * `dead` (unfetchable). That resolves every chunk, so the ordinary finalize
- * path then publishes the snapshot with whatever was collected (or cleanly
- * aborts it when nothing was). A snapshot still in `ladder_capture` never
- * finished seeding and holds nothing worth publishing — it is discarded.
+ * `dead` (unfetchable). That leaves no pending lines in the state file, so the
+ * ordinary finalize path then publishes the snapshot with whatever was collected
+ * (or cleanly aborts it when nothing was). A snapshot still in `ladder_capture`
+ * never finished seeding and holds nothing worth publishing — it is discarded.
  *
  * A final-transform failure during the close propagates to the caller: the
  * create workflow fails loudly (alert issue) with the phase left
