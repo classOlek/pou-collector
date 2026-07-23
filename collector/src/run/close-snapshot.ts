@@ -12,11 +12,12 @@
  * create workflow fails loudly (alert issue) with the phase left
  * `transforming`, and the next create fire resumes the close.
  */
-import type { SnapshotManifest } from '@classolek/shared';
+import type { SnapshotCharacter, SnapshotManifest } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import { ChunkStore } from '../chunks/chunk-store.js';
+import { readState, writeState } from '../snapshot-state/state-store.js';
 import type { Finalizer } from './finalize.js';
 import { discardSnapshotArtifacts } from './discard.js';
 
@@ -53,6 +54,22 @@ export async function closeInFlightSnapshot(
 
   let skippedMarked = 0;
   if (manifest.phase === 'collecting') {
+    // v4: rewrite the STATE FILE, marking every still-pending/retryable line
+    // `skipped` in one streamed pass (never JSON.parse the whole file — see
+    // state-store.ts). `readState` fetches the compressed body whole before any
+    // line is pulled and `writeState` puts only after the source fully drains,
+    // so this same-key read-modify-write never races itself.
+    await writeState(
+      deps.objectStore,
+      league,
+      snapshotId,
+      markRemainingSkipped(readState(deps.objectStore, league, snapshotId)),
+    );
+
+    // The chunk queue is still what finalize (Phase 5 target) rolls up and
+    // publishes, so it is marked in lockstep until finalize consumes the state
+    // file directly. `skippedMarked` is counted here (the authoritative publish
+    // path today); dual-writing keeps the state file consistent for the switch.
     const chunks = new ChunkStore(deps.objectStore);
     const all = await chunks.loadAll(league, snapshotId, manifest.chunkCount);
     for (const chunk of all) {
@@ -81,4 +98,22 @@ export async function closeInFlightSnapshot(
     result: finalize.phase === 'published' ? 'published' : 'aborted',
     skippedMarked,
   };
+}
+
+/**
+ * Streamed rewrite tagging every still-uncollected line (`pending`/`retryable`)
+ * as the terminal `skipped` outcome, leaving already-resolved lines (and their
+ * raw payloads) untouched. One line is materialized at a time, so a
+ * hundreds-of-MB state file closes within the heap.
+ */
+async function* markRemainingSkipped(
+  state: AsyncIterable<SnapshotCharacter>,
+): AsyncGenerator<SnapshotCharacter> {
+  for await (const line of state) {
+    if (line.outcome === 'pending' || line.outcome === 'retryable') {
+      yield { ...line, outcome: 'skipped' };
+    } else {
+      yield line;
+    }
+  }
 }
