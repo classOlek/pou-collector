@@ -4,8 +4,9 @@ name: NEW snapshot
 # dispatches a fire here after every roster build whose idle check found no
 # live snapshot. Each ordinary (unforced) fire is IDLE-GATED:
 #   - a live snapshot (collecting/transforming) → clean no-op, never touched;
-#   - otherwise CREATE the new snapshot — seed its pending chunks from the
-#     CURRENT per-league roster (maintained by the build-roster workflow).
+#   - otherwise CREATE the new snapshot — seed its state file (one pending line
+#     per character) from the CURRENT per-league roster (maintained by the
+#     build-roster workflow).
 # Snapshots therefore run back-to-back: the next one starts within one roster
 # cadence (~30 min) of the previous one completing.
 #
@@ -70,7 +71,6 @@ env:
   COLLECTOR_MAX_WAIT_MILLIS: ${{ vars.COLLECTOR_MAX_WAIT_MILLIS }}
   COLLECTOR_MAX_AGE_HOURS: ${{ vars.COLLECTOR_MAX_AGE_HOURS }}
   COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
-  COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
   COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
   COLLECTOR_ABORT_COOLDOWN_HOURS: ${{ vars.COLLECTOR_ABORT_COOLDOWN_HOURS }}
   COLLECTOR_MAX_TRANSFORM_ATTEMPTS: ${{ vars.COLLECTOR_MAX_TRANSFORM_ATTEMPTS }}

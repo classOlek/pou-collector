@@ -1,6 +1,24 @@
 # Snapshot state rework — phased implementation plan
 
-Status: **planned** (no code changed yet). Branch: `claude/snapshot-collection-rework-3izqbz`.
+Status: **implemented** on `claude/snapshot-collection-rework-3izqbz` (Phases 1–7).
+The chunk-file work-distribution model is gone: a snapshot is one private
+NDJSON.gz state file, workers self-select their share by state-line ordinal,
+each worker owns one transient result file, and finalize merges those into the
+state file. `SCHEMA_VERSION` is 4; the web-reader copy of
+`shared/` must land the same v4 edits in lockstep (see the WEB-READER notes in
+the phase handoffs). Two rollout follow-ups remain, both intentionally deferred
+past this branch:
+
+- Run the legacy-key sweep in production (`scripts/diagnostics/sweep-legacy-state.ts`,
+  dry-run by default), then remove the retained legacy chunk/raw parsers,
+  prefix builders, `classifyKey` `chunk`/`raw` categories and the sweep
+  diagnostic in a follow-up.
+- `chunkSize` was dropped from `RunConfig` / `config-file` / `config/collector.json`
+  and the `COLLECTOR_CHUNK_SIZE` workflow env line; a still-set Actions variable
+  is now simply ignored (no longer a validated key), so it can be removed at
+  leisure.
+
+The original plan follows unchanged for reference.
 
 ## Goal
 

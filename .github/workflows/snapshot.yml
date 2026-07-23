@@ -17,13 +17,17 @@ name: UPDATE collect snapshot
 #                has_work + the worker matrix. Never captures the ladder and
 #                never creates/closes snapshots (new-snapshot.yml does).
 #   work       — N parallel jobs, each on its own runner/IP with its own rate
-#                limiter. A worker only touches the chunks it owns
-#                (chunkIndex % workerCount == workerIndex — disjoint by
-#                construction, no two workers ever share a chunk).
-#   finalize   — rolls chunk outcomes into the manifest and publishes: an
-#                INCOMPLETE snapshot (complete:false, immediately visible)
-#                while chunks remain, the final immutable snapshot once the
-#                queue drains naturally. Then retention.
+#                limiter. Every worker streams the one snapshot state file and
+#                deterministically self-selects its share of the still-pending
+#                characters (state-line ordinal % workerCount == workerIndex —
+#                disjoint by construction). It writes only its own single
+#                result object (w<NN>.ndjson.gz), never the state file, so no
+#                two workers ever share an R2 object.
+#   finalize   — merges the per-worker result files into the snapshot state
+#                file, recomputes the manifest tally, then publishes: an
+#                INCOMPLETE snapshot (complete:false, immediately visible) while
+#                characters remain pending, the final immutable snapshot once
+#                the queue drains naturally. Then retention.
 #
 # A single concurrency group (shared with new-snapshot.yml) serializes whole
 # fires, so coordinate/finalize never overlap a previous fire's jobs, closes
@@ -38,7 +42,7 @@ on:
 
 # Single pipeline: never let two fires overlap. cancel-in-progress is false so
 # an in-flight fire finishes and checkpoints cleanly; the next fire simply
-# continues from the chunk/manifest state.
+# continues from the snapshot state file + manifest.
 concurrency:
   group: snapshot-collector
   cancel-in-progress: false
@@ -63,7 +67,7 @@ env:
   # variables → Actions → Variables; they hold no credentials, so plaintext
   # variables (not secrets) are fine. The vars context is snapshotted when the
   # run starts, so the coordinator and every worker of one fire always agree
-  # (chunk ownership stays disjoint).
+  # on workerCount (the state-line ownership split stays disjoint).
   COLLECTOR_LEAGUE: ${{ vars.COLLECTOR_LEAGUE }}
   COLLECTOR_DEPTH: ${{ vars.COLLECTOR_DEPTH }}
   COLLECTOR_TREE_URL: ${{ vars.COLLECTOR_TREE_URL }}
@@ -73,11 +77,10 @@ env:
   COLLECTOR_MAX_WAIT_MILLIS: ${{ vars.COLLECTOR_MAX_WAIT_MILLIS }}
   COLLECTOR_MAX_AGE_HOURS: ${{ vars.COLLECTOR_MAX_AGE_HOURS }}
   COLLECTOR_MAX_ATTEMPTS: ${{ vars.COLLECTOR_MAX_ATTEMPTS }}
-  COLLECTOR_CHUNK_SIZE: ${{ vars.COLLECTOR_CHUNK_SIZE }}
   COLLECTOR_WORKER_COUNT: ${{ vars.COLLECTOR_WORKER_COUNT }}
   # Early stop: once this many worker jobs finished their run this fire (any
   # clean stop — drained, budget spent, rate-limit stall), the rest checkpoint
-  # and stop (their chunks resume next fire). 0/unset = off.
+  # and stop (their still-pending characters resume next fire). 0/unset = off.
   COLLECTOR_EARLY_STOP_QUORUM: ${{ vars.COLLECTOR_EARLY_STOP_QUORUM }}
   # Minimum gap between work waves (the fleet's aggregate-politeness dial —
   # with pace state scoped per runner IP, wave cadence bounds total load on
@@ -126,8 +129,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 45
     strategy:
-      # One failed worker must not cancel its siblings — the remaining chunks
-      # simply wait for the next fire.
+      # One failed worker must not cancel its siblings — that slot's still-pending
+      # characters simply wait for the next fire.
       fail-fast: false
       matrix:
         worker: ${{ fromJSON(needs.coordinate.outputs.workers) }}
@@ -148,16 +151,18 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Resolve the chunks this worker slot owns. Resumable stops (budget /
-      # rate-limit) are clean exits; the next fire continues the queue.
+      # Resolve the pending characters this worker slot owns (its state-line
+      # ordinal share), flushing results to its own w<NN> result object.
+      # Resumable stops (budget / rate-limit) are clean exits; the next fire
+      # continues the queue.
       - name: Work
         run: pnpm --filter @pou/collector run work
 
   finalize:
     needs: [coordinate, work]
     # Runs whenever coordinate succeeded — even when workers were skipped
-    # (nothing pending) or some failed (their chunks stay pending). Skipped on
-    # coordinate failure: there is nothing consistent to roll up.
+    # (nothing pending) or some failed (their characters stay pending). Skipped
+    # on coordinate failure: there is nothing consistent to merge.
     if: always() && needs.coordinate.result == 'success' && needs.work.result != 'cancelled'
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -176,9 +181,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
-      # Roll up chunk outcomes, publish (incremental while incomplete, final
-      # immutable publish once drained), then retention. Idempotent and safe to
-      # re-run.
+      # Merge the per-worker result files into the state file, publish
+      # (incremental while incomplete, final immutable publish once drained),
+      # then retention. Idempotent and safe to re-run.
       - name: Finalize & publish
         id: finalize
         run: pnpm --filter @pou/collector run finalize
