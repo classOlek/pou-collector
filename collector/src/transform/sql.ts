@@ -69,10 +69,23 @@ export function createTreeNodesSql(treeFile: string): string {
     format='newline_delimited');`;
 }
 
-/** The unnested-item rows shared by items / item_mods / skills (built once). */
+/**
+ * The unnested-item rows shared by items / item_mods / skills (built once).
+ *
+ * v6: each row also carries a stable per-item `item_id`
+ * (`character_key || '#' || <0-based ordinal within the character's items array>`).
+ * The ordinal is `generate_subscripts(<items array>, 1)` unnested in lockstep with
+ * the item `unnest` — DuckDB zips the two set-returning functions position-for-
+ * position over the SAME array, so element k always pairs with subscript k (array
+ * order, deterministic; verified against the native binding). Deriving it HERE,
+ * before any downstream WHERE, keeps `items` and `item_mods` agreeing on the id
+ * even though `items` further filters on a present `inventoryId`.
+ */
 export function createItemRowsSql(): string {
   return `CREATE TABLE item_rows AS
-    SELECT character_key, unnest(CAST(items->'$.items' AS JSON[])) AS item
+    SELECT character_key,
+      unnest(CAST(items->'$.items' AS JSON[])) AS item,
+      character_key || '#' || (generate_subscripts(CAST(items->'$.items' AS JSON[]), 1) - 1) AS item_id
     FROM chars
     WHERE json_array_length(coalesce(items->'$.items', '[]')) > 0;`;
 }
@@ -102,7 +115,8 @@ export function createCharactersSql(snapshotId: string): string {
  * item's largest link group. v5 adds the per-item detail the v4 columns dropped:
  * `sockets` (the raw GGG sockets array as JSON text — colours + groups, lossless),
  * `quality`/`req_level` (parsed from properties/requirements) and GGG's item flag
- * booleans (absent => false).
+ * booleans (absent => false). v6 adds the stable per-item `item_id` (from
+ * item_rows) as the second column, the key `item_mods` joins back on.
  */
 export function createItemsSql(): string {
   const flag = (field: string): string =>
@@ -115,6 +129,7 @@ export function createItemsSql(): string {
   return `CREATE TABLE items AS
     SELECT
       character_key,
+      item_id,
       item->>'$.inventoryId' AS slot,
       item->>'$.name' AS name,
       coalesce(item->>'$.baseType', item->>'$.typeLine') AS base_type,
@@ -154,8 +169,11 @@ export function createItemsSql(): string {
  * no rows. (Nested mod structures like `crucible` stay in the raw safety net.)
  */
 export function createItemModsSql(): string {
+  // v6: key each mod on the owning item's per-item `item_id` (from item_rows), not
+  // its `inventoryId` — so several items sharing a slot (flasks, jewels) no longer
+  // pool their mods. Covers all eight domain branches below.
   const domain = (field: string, label: string): string =>
-    `SELECT character_key, item->>'$.inventoryId' AS item_key, ${sqlString(label)} AS mod_domain,
+    `SELECT character_key, item_id AS item_key, ${sqlString(label)} AS mod_domain,
        unnest(CAST(coalesce(item->'$.${field}', '[]') AS VARCHAR[])) AS mod_text FROM item_rows`;
   return `CREATE TABLE item_mods AS
     ${domain('implicitMods', 'implicit')}

@@ -68,6 +68,17 @@ export interface CharSpec {
   };
   /** Opt-in chosen masteries (v5): mastery node hash → chosen effect hash. */
   masteries?: Record<number, number>;
+  /**
+   * Opt-in flasks (v6). Every flask shares `inventoryId = 'Flask'`, so this is the
+   * per-item-key regression case: two flasks with DIFFERENT mods must each keep
+   * only their own. Added to the gear after the body armour / weapon / cluster.
+   */
+  flasks?: {
+    name?: string;
+    baseType?: string;
+    explicitMods?: string[];
+    utilityMods?: string[];
+  }[];
 }
 
 /** Build one raw shard record (the exact shape the collector's sink writes). */
@@ -160,6 +171,23 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
       }
     : {};
 
+  // v6: flasks all carry `inventoryId = 'Flask'` — the shared-slot case the
+  // per-item `item_id` disambiguates. Appended after the cluster item.
+  const flaskItems = (spec.flasks ?? []).map((f) => ({
+    inventoryId: 'Flask',
+    name: f.name ?? '',
+    typeLine: f.baseType ?? 'Quicksilver Flask',
+    baseType: f.baseType ?? 'Quicksilver Flask',
+    rarity: 'Magic',
+    ilvl: 20,
+    corrupted: false,
+    identified: true,
+    ...(f.explicitMods ? { explicitMods: f.explicitMods } : {}),
+    ...(f.utilityMods ? { utilityMods: f.utilityMods } : {}),
+    sockets: [],
+    socketedItems: [],
+  }));
+
   return {
     rank: spec.rank,
     account: spec.account,
@@ -176,7 +204,7 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
         level: spec.level ?? 100,
         experience: 4250334444,
       },
-      items: [bodyArmour, weapon, ...clusterItem],
+      items: [bodyArmour, weapon, ...clusterItem, ...flaskItems],
     },
     passives: {
       hashes: spec.nodes ?? [123],

@@ -158,6 +158,33 @@ async function parquetRowCount(store: MemoryObjectStore, key: string): Promise<n
   return Number(n ?? 0);
 }
 
+/**
+ * Run a query over several published parquet objects at once. Each `aliases`
+ * entry maps a `$NAME` placeholder in the SQL to a store key; the placeholder is
+ * replaced with that object's on-disk parquet path (for cross-table joins, e.g.
+ * items ⋈ item_mods on the v6 per-item key).
+ */
+async function queryParquetTables(
+  store: MemoryObjectStore,
+  aliases: Record<string, string>,
+  sql: string,
+): Promise<unknown[][]> {
+  let resolved = sql;
+  for (const [name, key] of Object.entries(aliases)) {
+    const bytes = await store.get(key);
+    if (!bytes) throw new Error(`missing parquet ${key}`);
+    const file = join(tmpRoot, `read-${name}-${key.replace(/[^a-z0-9]/gi, '_')}.parquet`);
+    await writeFile(file, Buffer.from(bytes));
+    resolved = resolved.replaceAll(`$${name}`, `'${file.replace(/'/g, "''")}'`);
+  }
+  const db = await DuckDb.open();
+  try {
+    return await db.rows(resolved);
+  } finally {
+    db.close();
+  }
+}
+
 describe('runTransform golden file', () => {
   it('normalizes shards into Parquet with the expected row counts and aggregate values', async () => {
     const store = new MemoryObjectStore();
@@ -355,12 +382,20 @@ describe('runTransform v5 enrichment (cluster jewels, extra fields, raw net)', (
     expect(jewel[0]?.[3]).toBe(true); // identified
     expect(jewel[0]?.[4]).toBe('[]'); // sockets JSON text, lossless
 
-    // The jewel's explicit AND fractured mods land in item_mods (extra v5 domains).
-    const jewelMods = await queryParquet(
+    // The jewel's explicit AND fractured mods land in item_mods (extra v5 domains),
+    // attributed via the v6 per-item join (items.item_id = item_mods.item_key).
+    const jewelMods = await queryParquetTables(
       store,
-      snapshotDetailPath(LEAGUE, SNAP, 'item_mods'),
-      "SELECT mod_domain, mod_text FROM read_parquet($FILE) WHERE item_key = 'PassiveJewels' " +
-        'ORDER BY mod_domain, mod_text',
+      {
+        ITEMS: snapshotDetailPath(LEAGUE, SNAP, 'items'),
+        MODS: snapshotDetailPath(LEAGUE, SNAP, 'item_mods'),
+      },
+      `SELECT m.mod_domain, m.mod_text
+         FROM read_parquet($ITEMS) i
+         JOIN read_parquet($MODS) m
+           ON m.character_key = i.character_key AND m.item_key = i.item_id
+        WHERE i.slot = 'PassiveJewels'
+        ORDER BY m.mod_domain, m.mod_text`,
     );
     expect(jewelMods.map((r) => [r[0], r[1]])).toEqual([
       ['explicit', '1 Added Passive Skill is Feast of Flesh'],
@@ -411,6 +446,84 @@ describe('runTransform v5 enrichment (cluster jewels, extra fields, raw net)', (
     // Nothing is skipped: fields the normalized tables omit survive verbatim here.
     expect(String(raw[0]?.[1])).toContain('PassiveJewels');
     expect(String(raw[0]?.[2])).toContain('jewel_data');
+  });
+});
+
+describe('runTransform v6 per-item key (item_id)', () => {
+  // A character wearing two flasks whose mods differ — the exact case v5 pooled.
+  const twoFlasks: CharSpec = {
+    rank: 1,
+    account: 'f',
+    character: 'F',
+    class: 'Deadeye',
+    mainSkill: 'Tornado Shot',
+    flasks: [
+      { name: 'Bubbling Divine Life Flask', explicitMods: ['Immunity to Bleeding'] },
+      { name: 'Chemists Quicksilver Flask', explicitMods: ['Increased Movement Speed'] },
+    ],
+  };
+
+  it('gives two same-slot flasks distinct item_ids and never pools their mods', async () => {
+    const store = new MemoryObjectStore();
+    await seedState(store, LEAGUE, SNAP, [twoFlasks]);
+    const manifest = transformingManifest(LEAGUE, SNAP, [twoFlasks]);
+    const { deps } = makeDeps(store);
+
+    await runTransform(manifest, { treeVersion: '3.25-test', complete: true }, deps);
+
+    // (a) Two distinct `items` rows with distinct item_ids for the two flasks.
+    const flaskItems = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'items'),
+      "SELECT name, item_id FROM read_parquet($FILE) WHERE slot = 'Flask' ORDER BY item_id",
+    );
+    expect(flaskItems).toHaveLength(2);
+    const ids = flaskItems.map((r) => String(r[1]));
+    expect(new Set(ids).size).toBe(2); // distinct
+    // The id is character_key || '#' || <items-array ordinal> (0-based).
+    expect(ids).toEqual(['f/F#2', 'f/F#3']); // body armour #0, weapon #1, flasks #2/#3
+
+    // (b) Joining item_mods on item_key = item_id attributes each flask ONLY its
+    //     own mod — no pooling, no cross-bleed.
+    const attributed = await queryParquetTables(
+      store,
+      {
+        ITEMS: snapshotDetailPath(LEAGUE, SNAP, 'items'),
+        MODS: snapshotDetailPath(LEAGUE, SNAP, 'item_mods'),
+      },
+      `SELECT i.name, m.mod_text
+         FROM read_parquet($ITEMS) i
+         JOIN read_parquet($MODS) m
+           ON m.character_key = i.character_key AND m.item_key = i.item_id
+        WHERE i.slot = 'Flask'
+        ORDER BY i.name, m.mod_text`,
+    );
+    expect(attributed.map((r) => [r[0], r[1]])).toEqual([
+      ['Bubbling Divine Life Flask', 'Immunity to Bleeding'],
+      ['Chemists Quicksilver Flask', 'Increased Movement Speed'],
+    ]);
+    // Each flask has exactly one mod row (not two — the v5 pooling bug).
+    expect(attributed).toHaveLength(2);
+  });
+
+  it('derives item_id deterministically: two runs over identical input agree', async () => {
+    const run = async (): Promise<string[]> => {
+      const store = new MemoryObjectStore();
+      await seedState(store, LEAGUE, SNAP, [twoFlasks]);
+      const { deps } = makeDeps(store);
+      await runTransform(
+        transformingManifest(LEAGUE, SNAP, [twoFlasks]),
+        { treeVersion: '3.25-test', complete: true },
+        deps,
+      );
+      const rows = await queryParquet(
+        store,
+        snapshotDetailPath(LEAGUE, SNAP, 'items'),
+        'SELECT item_id FROM read_parquet($FILE) ORDER BY item_id',
+      );
+      return rows.map((r) => String(r[0]));
+    };
+    expect(await run()).toEqual(await run());
   });
 });
 
