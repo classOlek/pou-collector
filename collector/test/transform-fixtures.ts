@@ -7,7 +7,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { SnapshotManifest } from '@classolek/shared';
+import type { SnapshotCharacter, SnapshotManifest } from '@classolek/shared';
 import { SCHEMA_VERSION, chunkCountFor, emptyTally } from '@classolek/shared';
 import type { PassiveTree, TreeOrigin } from '../src/transform/tree-source.js';
 
@@ -116,6 +116,36 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
       items: [bodyArmour, weapon],
     },
     passives: { hashes: spec.nodes ?? [123], hashes_ex: [], items: [], jewel_data: {} },
+  };
+}
+
+/**
+ * One `ok` state-file line for a spec: the queued identity plus the raw
+ * payloads inline (`characterData` = the get-items response, `passiveTree` =
+ * the get-passives response — the v4 state file IS the raw). This is what the
+ * transform streams and emits back to the DuckDB NDJSON. A non-`ok` outcome
+ * carries no payloads.
+ */
+export function buildStateLine(
+  spec: CharSpec,
+  outcome: SnapshotCharacter['outcome'] = 'ok',
+): SnapshotCharacter {
+  const raw = buildRawRecord(spec);
+  return {
+    rank: spec.rank,
+    account: spec.account,
+    character: spec.character,
+    class: spec.class,
+    level: spec.level ?? 100,
+    outcome,
+    attempts: 1,
+    ...(outcome === 'ok'
+      ? {
+          fetchedAt: raw['fetchedAt'] as string,
+          characterData: raw['items'],
+          passiveTree: raw['passives'],
+        }
+      : {}),
   };
 }
 

@@ -10,7 +10,6 @@ import type { SnapshotChunk, SnapshotCharacter, SnapshotMeta } from '@classolek/
 import {
   chunkPath,
   isChunkResolved,
-  pendingOfTally,
   snapshotMetaPath,
   snapshotStatePath,
   workerResultPath,
@@ -22,7 +21,7 @@ import { readState } from '../snapshot-state/state-store.js';
 import { HOUR_MS } from './config.js';
 import { LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
 import { buildLadder } from '../../test/mock-api.js';
-import { fixtureManifest, tallyOutcomes } from '../../test/helpers.js';
+import { fixtureManifest } from '../../test/helpers.js';
 
 /** Drain a state-file stream into an array (small in these fixtures). */
 async function readAllState(
@@ -226,13 +225,10 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
     expect(manifest?.phase).toBe('collecting');
     expect(manifest?.totalCharacters).toBe(10);
 
-    // The closed snapshot's state file was rewritten so NOTHING remains pending
-    // — every line reached a terminal outcome. (In this phase the worker still
-    // updates chunks, not the state file, so every seeded-pending line closes to
-    // `skipped`; once Phase 4 wires workers→state the collected lines stay `ok`.)
-    const closedState = await readAllState(h, 'snap-fixed');
-    expect(pendingOfTally(tallyOutcomes(closedState))).toBe(0);
-    expect(tallyOutcomes(closedState).skipped).toBeGreaterThan(0);
+    // The closed snapshot published immutably, so its state file (the v4 raw)
+    // was deleted along with the chunk queue. The honest skip accounting lives
+    // in the published meta (checked above: 5 collected `ok`, 5 marked skipped).
+    expect(h.objectStore.keys()).not.toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
     // The fresh snapshot's state file is seeded all-pending.
     expect((await readAllState(h, 'snap-2')).every((c) => c.outcome === 'pending')).toBe(true);
   });

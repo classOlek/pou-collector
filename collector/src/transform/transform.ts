@@ -1,34 +1,43 @@
 /**
- * Transform & publish (Phase 3 + the incremental-publish redesign). A pure
- * batch job, idempotent and safe to re-run on the same raw
- * (docs/ARCHITECTURE.md §7):
+ * Transform & publish (Phase 3 + the incremental-publish redesign; v4 single
+ * state file). A pure batch job, idempotent and safe to re-run on the same
+ * state (docs/ARCHITECTURE.md §7):
  *
- *   download raw shards ─▶ gunzip to temp NDJSON ─▶ DuckDB normalize
+ *   stream state file (ok lines) ─▶ temp NDJSON ─▶ DuckDB normalize
  *     ─▶ build aggregates + meta ─▶ VALIDATE (before any write)
  *     ─▶ COPY zstd Parquet ─▶ publish ─▶ update index
- *     ─▶ [final only] phase transforming→published ─▶ delete raw
+ *     ─▶ [final only] phase transforming→published ─▶ delete state file + results
+ *
+ * The snapshot's raw IS its single NDJSON.gz state file now
+ * (snapshotStatePath): step 1 streams it a line at a time and emits every
+ * `outcome == 'ok'` line — converted back to the raw get-items / get-passive
+ * record shape the SQL expects (`characterData` → items, `passiveTree` →
+ * passives) — into one temp NDJSON file DuckDB ingests. There are no per-chunk
+ * raw shards; the SQL, aggregates, validation gate, meta and index logic are
+ * untouched.
  *
  * Two modes, chosen by `config.complete`:
  *  - complete: false — the INCREMENTAL publish of a still-collecting snapshot.
- *    Publishes whatever raw exists so far with meta/index marked incomplete
- *    (pendingCount > 0), keeps raw, and leaves the checkpoint untouched. The
- *    same snapshot's files are overwritten in place on the next pass —
- *    incomplete snapshots are mutable by design.
+ *    Publishes whatever `ok` lines exist so far with meta/index marked
+ *    incomplete (pendingCount > 0), keeps the state file, and leaves the
+ *    checkpoint untouched. The same snapshot's files are overwritten in place
+ *    on the next pass — incomplete snapshots are mutable by design.
  *  - complete: true — the FINAL publish. From here the snapshot is immutable
- *    (hard rule #5): checkpoint moves to `published` and raw is deleted.
+ *    (hard rule #5): checkpoint moves to `published` and the state file + any
+ *    transient result files are deleted (the state file is the raw).
  *
- * Validation runs before anything is published or deleted; on failure raw is
- * kept and nothing is published (the caller exits nonzero). Any thrown error
- * before the final delete leaves raw intact by construction, so a truncated gz
- * or an invalid JSON line can never destroy the only copy of the data. (A crash
- * in the publish→delete window leaks raw, but retention owns orphaned raw and
- * sweeps it — see retention.ts.)
+ * Validation runs before anything is published or deleted; on failure the state
+ * file is kept and nothing is published (the caller exits nonzero). Any thrown
+ * error before the final delete leaves the state file intact by construction, so
+ * a truncated gz or an invalid JSON line can never destroy the only copy of the
+ * data. (A crash in the publish→delete window leaks the state file, but
+ * retention owns orphaned state and sweeps it.)
  *
- * Memory at 15k depth: the DB is file-backed with a spill dir; the big JSON
- * tables (chars/item_rows) are dropped before aggregation; Parquet is streamed
- * to disk and re-read one file at a time at upload (never five buffers at once).
+ * Memory at 15k depth: the state file is streamed (never JSON.parsed whole); the
+ * DB is file-backed with a spill dir; the big JSON tables (chars/item_rows) are
+ * dropped before aggregation; Parquet is streamed to disk and re-read one file
+ * at a time at upload (never five buffers at once).
  */
-import { createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { createWriteStream } from 'node:fs';
@@ -39,6 +48,7 @@ import type {
   AggregateFile,
   AggregateKind,
   Coverage,
+  SnapshotCharacter,
   SnapshotManifest,
   SnapshotMeta,
 } from '@classolek/shared';
@@ -48,14 +58,16 @@ import {
   coverageOfTally,
   pendingOfTally,
   percentage,
-  rawShardPrefix,
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
+  snapshotStatePath,
+  workerResultPrefix,
 } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { listKeys, putJson, type ObjectStore } from '../checkpoint/object-store.js';
+import { readState } from '../snapshot-state/state-store.js';
 import { readIndex, upsertSnapshot, writeIndex } from '../index-file.js';
 import { DuckDb } from './duckdb.js';
 import type { TreeSource } from './tree-source.js';
@@ -108,7 +120,34 @@ export interface TransformSummary {
   characterCount: number;
   detailBytes: Record<string, number>;
   aggregateRows: Record<string, number>;
+  /**
+   * Raw objects deleted on the final publish: the snapshot's single state file
+   * plus any lingering per-worker result files (the v4 raw). 0 on an incremental
+   * publish, which keeps the state file. (Named `rawShardsDeleted` from the
+   * chunk-shard era; Phase 7 renames the display wording.)
+   */
   rawShardsDeleted: number;
+}
+
+/**
+ * One `ok` state line → the raw get-items / get-passive record the SQL reads.
+ * The state file stores the payloads as `characterData` (items response) and
+ * `passiveTree` (passives response); this restores the `{ items, passives }`
+ * shape createCharsSql / RAW_COLUMNS expect, carrying the identity columns
+ * through unchanged. Only called for `outcome === 'ok'` lines (the only ones
+ * with payloads).
+ */
+function rawRecordOf(line: SnapshotCharacter): Record<string, unknown> {
+  return {
+    rank: line.rank,
+    account: line.account,
+    character: line.character,
+    class: line.class,
+    level: line.level,
+    fetchedAt: line.fetchedAt,
+    items: line.characterData,
+    passives: line.passiveTree,
+  };
 }
 
 /** Run an async fn over items with bounded concurrency, preserving input order. */
@@ -146,21 +185,27 @@ export async function runTransform(
   const workDir = await mkdtemp(join(deps.tmpRoot ?? tmpdir(), 'pou-transform-'));
 
   try {
-    // 1. Download raw shards, streamed through gunzip to temp NDJSON (bounded
-    //    parallel; no compressed+decompressed+string triple-buffer). A truncated
-    //    or corrupt shard throws here, leaving raw intact.
-    const prefix = rawShardPrefix(league, snapshotId);
-    const shardKeys = (await listKeys(deps.objectStore, prefix)).sort();
-    const shardFiles = await mapLimit(shardKeys, IO_CONCURRENCY, async (key, i) => {
-      const bytes = await deps.objectStore.get(key);
-      const file = join(workDir, `shard-${String(i).padStart(5, '0')}.ndjson`);
-      await pipeline(
-        Readable.from(Buffer.from(bytes ?? new Uint8Array())),
-        createGunzip(),
-        createWriteStream(file),
-      );
-      return file;
-    });
+    // 1. Stream the single state file (never JSON.parsed whole), emitting every
+    //    `ok` line — converted back to the raw record shape the SQL reads — into
+    //    one temp NDJSON file. A truncated gz or an invalid line throws here
+    //    (readState is a hard error), leaving the state file intact. With zero
+    //    `ok` lines the file list is empty, so createCharsSql emits a typed empty
+    //    table and the validation gate blocks publish cleanly (no read_json([])).
+    let okCount = 0;
+    const stateNdjson = join(workDir, 'state.ndjson');
+    await pipeline(
+      Readable.from(
+        (async function* () {
+          for await (const line of readState(deps.objectStore, league, snapshotId)) {
+            if (line.outcome !== 'ok') continue;
+            okCount += 1;
+            yield JSON.stringify(rawRecordOf(line)) + '\n';
+          }
+        })(),
+      ),
+      createWriteStream(stateNdjson),
+    );
+    const shardFiles = okCount > 0 ? [stateNdjson] : [];
 
     // 2. Resolve + cache the passive tree, write it as NDJSON for read_json.
     const tree = await deps.treeSource.load(config.treeVersion);
@@ -294,9 +339,11 @@ export async function runTransform(
 
     // 10–11. Final publish only: move the checkpoint transforming → published
     // (the snapshot is immutable from here; the interval gate now applies) and
-    // delete raw after the successful, validated publish (batched). An
-    // incremental publish keeps raw AND the checkpoint — the next pass reworks
-    // the growing raw set and republishes in place.
+    // delete the state file + any transient result files after the successful,
+    // validated publish (the state file IS the raw). An incremental publish
+    // keeps the state file AND the checkpoint — the next pass reworks the growing
+    // `ok` set and republishes in place.
+    let rawShardsDeleted = 0;
     if (config.complete) {
       const published: SnapshotManifest = {
         ...manifest,
@@ -304,7 +351,10 @@ export async function runTransform(
         completedAt: manifest.completedAt ?? new Date(deps.clock.now()).toISOString(),
       };
       await deps.checkpointStore.save(published);
-      await mapLimit(shardKeys, IO_CONCURRENCY, (key) => deps.objectStore.delete(key));
+      const resultKeys = await listKeys(deps.objectStore, workerResultPrefix(league, snapshotId));
+      await mapLimit(resultKeys, IO_CONCURRENCY, (key) => deps.objectStore.delete(key));
+      await deps.objectStore.delete(snapshotStatePath(league, snapshotId));
+      rawShardsDeleted = resultKeys.length + 1;
     }
 
     return {
@@ -320,7 +370,7 @@ export async function runTransform(
         AggregateKind,
         number
       >,
-      rawShardsDeleted: config.complete ? shardKeys.length : 0,
+      rawShardsDeleted,
     };
   } finally {
     await rm(workDir, { recursive: true, force: true });

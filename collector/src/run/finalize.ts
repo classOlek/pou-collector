@@ -1,32 +1,43 @@
 /**
  * Finalize step: runs after the worker matrix in every workflow fire
- * (docs/ARCHITECTURE.md §5). The single writer of the manifest at this point:
+ * (docs/ARCHITECTURE.md §5). The single writer of the manifest + state file at
+ * this point (v4 — result-file merge, docs/PLAN_SNAPSHOT_STATE_REWORK.md §5):
  *
- *  1. rolls the per-chunk outcomes up into the manifest (the snapshot's one
- *     authoritative tally);
- *  2. aborts an over-age snapshot (discarding raw, chunks, any incomplete
- *     published files and its index entry);
- *  3. while chunks remain pending: publishes the data collected SO FAR as an
+ *  1. merges this fire's transient per-worker result files into the snapshot's
+ *     single NDJSON.gz state file (streamed, idempotent — last write per
+ *     identity wins), recomputes the outcome tally by streaming the merged
+ *     state into the manifest, and ONLY THEN deletes the result files. A crash
+ *     before the delete re-merges idempotently next fire; a crash before the
+ *     manifest write re-merges too — merge is the recovery path, no special
+ *     cases;
+ *  2. aborts an over-age snapshot (discarding the state file, results, legacy
+ *     chunks, any incomplete published files and its index entry);
+ *  3. while characters remain pending: publishes the data collected SO FAR as an
  *     incomplete snapshot (complete: false) — immediately visible in the web
  *     app, republished in place each run. A partial-publish failure only warns:
  *     collection must keep going regardless;
- *  4. when every chunk is resolved: hands the snapshot to the final transform
- *     (executeTransform: bounded attempts → published, immutable from then on)
- *     and deletes the chunk files.
+ *  4. when every character is resolved: hands the snapshot to the final
+ *     transform (executeTransform: bounded attempts → published, immutable from
+ *     then on), which deletes the state file (the raw) + results; finalize also
+ *     sweeps the legacy chunk files (retired in Phase 6).
  */
-import type { OutcomeTally, SnapshotManifest, SnapshotPhase } from '@classolek/shared';
-import {
-  addTallies,
-  emptyTally,
-  isChunkResolved,
-  pendingOfTally,
-  rawShardPrefix,
-  tallyOutcomes,
+import type {
+  OutcomeTally,
+  SnapshotCharacter,
+  SnapshotManifest,
+  SnapshotPhase,
 } from '@classolek/shared';
+import { emptyTally, pendingOfTally, workerResultPrefix } from '@classolek/shared';
 import type { CheckpointStore } from '../checkpoint/store.js';
-import type { ObjectStore } from '../checkpoint/object-store.js';
+import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
 import { PaceStateStore } from '../rate-limit/pace-store.js';
 import { ChunkStore } from '../chunks/chunk-store.js';
+import {
+  mergeResults,
+  readState,
+  readWorkerResultFile,
+  writeState,
+} from '../snapshot-state/state-store.js';
 import { executeTransform, type TransformStepConfig } from '../transform/execute.js';
 import { runTransform, type TransformDeps, type TransformSummary } from '../transform/transform.js';
 import { HOUR_MS } from './config.js';
@@ -116,26 +127,13 @@ export class Finalizer {
       };
     }
 
-    // 1. Roll chunk outcomes up into the manifest (+ orphan-shard cleanup so
-    //    raw and the rollup agree before any publish).
-    const chunks = await this.chunks.loadAll(
-      manifest.league,
-      manifest.snapshotId,
-      manifest.chunkCount,
-    );
-    await this.deleteOrphanShards(manifest, chunks);
-    const outcomes = emptyTally();
-    let resolvedChunks = 0;
-    for (const chunk of chunks) {
-      addTallies(outcomes, tallyOutcomes(chunk.characters));
-      if (isChunkResolved(chunk)) resolvedChunks += 1;
-    }
-    const rolled: SnapshotManifest = { ...manifest, outcomes, resolvedChunks };
-    await this.deps.checkpointStore.save(rolled);
+    // 1. Merge this fire's worker result files into the state file and roll the
+    //    outcome tally up into the manifest. The result files are deleted only
+    //    after the merged state + manifest are durable (see mergeStateAndRollup).
+    const { rolled, outcomes } = await this.mergeStateAndRollup(manifest);
     this.log(
-      `rollup: ${resolvedChunks}/${rolled.chunkCount} chunks resolved ` +
-        `(ok=${outcomes.ok} private=${outcomes.private} dead=${outcomes.dead} ` +
-        `retry=${outcomes.retryable} pending=${outcomes.pending} skipped=${outcomes.skipped})`,
+      `rollup: ok=${outcomes.ok} private=${outcomes.private} dead=${outcomes.dead} ` +
+        `retry=${outcomes.retryable} pending=${outcomes.pending} skipped=${outcomes.skipped}`,
     );
 
     // 2. Over-age abort (hard block): discard everything, cooldown applies.
@@ -252,27 +250,65 @@ export class Finalizer {
   }
 
   /**
-   * Remove raw shards past any chunk's committed cursor. A worker crash can
-   * leave one orphan shard per chunk (shard written, chunk checkpoint not);
-   * cleaning here keeps the rollup and raw consistent so validation of the
-   * incremental publish doesn't trip over records no chunk accounts for.
+   * Merge this fire's transient per-worker result files into the state file,
+   * then recompute the outcome tally by streaming the merged state into the
+   * manifest. Order (crash-safe, design decision 3):
+   *
+   *   list results → mergeResults into the state file → recompute tally →
+   *   write manifest → ONLY THEN delete the result files.
+   *
+   * `mergeResults` is idempotent (last write per identity wins, matched lines
+   * replaced by the same record every pass), so a crash anywhere before the
+   * delete simply re-merges the still-present results next fire — merge is the
+   * recovery path, there is no special case. A result file that fails to decode
+   * is skipped (it is transient and re-derivable — its characters stay
+   * pending/retryable in the state file until merged) but still deleted with the
+   * wave, so one bad transient object never wedges the snapshot.
+   *
+   * The same-key streamed read-modify-write is safe: `readState` fetches the
+   * whole compressed body up front, and `writeState` puts only after the merge
+   * generator fully drains (see the writeState doc-comment).
    */
-  private async deleteOrphanShards(
+  private async mergeStateAndRollup(
     manifest: SnapshotManifest,
-    chunks: readonly { chunkIndex: number; shardsWritten: number }[],
-  ): Promise<void> {
-    const keys = await this.deps.objectStore.listDetailed(
-      rawShardPrefix(manifest.league, manifest.snapshotId),
+  ): Promise<{ rolled: SnapshotManifest; outcomes: OutcomeTally }> {
+    const { league, snapshotId } = manifest;
+    const resultKeys = await listKeys(
+      this.deps.objectStore,
+      workerResultPrefix(league, snapshotId),
     );
-    const cursorByChunk = new Map(chunks.map((c) => [c.chunkIndex, c.shardsWritten]));
-    for (const { key } of keys) {
-      const match = /chunk-(\d+)-(\d+)\.ndjson\.gz$/.exec(key);
-      if (!match) continue;
-      const cursor = cursorByChunk.get(Number(match[1]));
-      if (cursor === undefined || Number(match[2]) >= cursor) {
-        await this.deps.objectStore.delete(key);
+    const results: SnapshotCharacter[] = [];
+    for (const key of resultKeys) {
+      try {
+        for await (const line of readWorkerResultFile(this.deps.objectStore, key)) {
+          results.push(line);
+        }
+      } catch (err) {
+        this.log(
+          `skipping unreadable result file ${key}: ${err instanceof Error ? err.message : String(err)}`,
+        );
       }
     }
+
+    // Merge the results into the state file (streamed, idempotent) and tally the
+    // merged outcomes inline as each line is written — one streamed read + one
+    // write, no second pass. `outcomes` is complete once writeState resolves
+    // (the merge generator is fully drained before the put).
+    const outcomes = emptyTally();
+    const merged = mergeResults(readState(this.deps.objectStore, league, snapshotId), results);
+    const tallying = async function* (): AsyncGenerator<SnapshotCharacter> {
+      for await (const line of merged) {
+        outcomes[line.outcome] += 1;
+        yield line;
+      }
+    };
+    await writeState(this.deps.objectStore, league, snapshotId, tallying());
+    const rolled: SnapshotManifest = { ...manifest, outcomes };
+    await this.deps.checkpointStore.save(rolled);
+
+    // The merged state + manifest are durable — only now sweep the result files.
+    for (const key of resultKeys) await this.deps.objectStore.delete(key);
+    return { rolled, outcomes };
   }
 
   /**

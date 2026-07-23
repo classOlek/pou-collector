@@ -1,70 +1,46 @@
 /**
- * Worker step: one of N parallel chunk consumers (docs/ARCHITECTURE.md §5).
+ * Worker step: one of N parallel collectors (docs/ARCHITECTURE.md §5), v4
+ * state-file model (docs/PLAN_SNAPSHOT_STATE_REWORK.md §5).
  *
  * Workers run as a GitHub Actions matrix after the coordinator. Each worker:
- *  1. loads the manifest (must be `collecting`) and ONLY the chunk files it
- *     owns — the indices where `chunkIndex % workerCount === workerIndex`,
- *     enumerated from the manifest's chunkCount without reading anything;
- *  2. takes the still-pending chunks among those it owns — ownership is
- *     round-robin by worker index, so it is disjoint by construction and no two
- *     workers ever touch (or even read for) the same chunk (the redesign's
- *     no-shared-chunk requirement, with no locks or claims needed);
- *  3. resolves each owned chunk's not-yet-computed characters, writes the raw
- *     records as ONE shard per chunk visit, then checkpoints the chunk file
- *     (shard before chunk: a crash in between leaves an orphan shard that
- *     finalize/next-visit cleanup removes — never lost outcomes);
+ *  1. loads the manifest (must be `collecting`) and streams the snapshot's
+ *     single NDJSON.gz state file ONCE to derive the still-pending identities
+ *     (payload-free — no raw payloads are held), keeping only the share it owns:
+ *     the pending ordinals where `ordinal % workerCount === workerIndex`;
+ *  2. that split is round-robin by worker index over the state file's stable
+ *     line order, so it is disjoint by construction and no two workers ever
+ *     resolve (or fetch for) the same character (the redesign's single-writer
+ *     requirement, with no locks or claims needed);
+ *  3. resolves each owned pending character and buffers every resolution into
+ *     this slot's ONE transient result object (state/<league>/results/<id>/
+ *     w<NN>.ndjson.gz) — a gzipped NDJSON `SnapshotCharacter` line per character
+ *     it resolved this run, carrying the raw items/passives inline for the `ok`
+ *     ones. The result object is overwritten in place periodically (every
+ *     `resultCheckpointEvery` resolved characters) and once more on every clean
+ *     stop, so a worker crash loses at most a few characters' fetches, not the
+ *     whole run (design decision 4);
  *  4. persists its own limiter memory under its slot (each runner has its own
  *     IP, so rate-limit adaptation is per slot). The pace state inside it is
  *     additionally scoped to the runner's public IP (deps.publicIp →
  *     limiter.adoptIp): a new IP starts the per-IP windows fresh, while
  *     penalties/streaks — client-scoped signals — always carry across runs.
  *
- * v4 dual-write (docs/PLAN_SNAPSHOT_STATE_REWORK.md, "the pipeline switches over
- * in 3–5"): alongside the chunk/shard checkpoint every resolution also lands in
- * this slot's ONE transient result object (state/<league>/results/<id>/w<NN>.
- * ndjson.gz) — a gzipped NDJSON `SnapshotCharacter` line per character the
- * worker resolved this run, carrying the raw items/passives inline for the
- * `ok` ones. The result file is overwritten in place periodically (every
- * `resultCheckpointEvery` resolved characters) and on every clean stop, so a
- * worker crash loses at most a few characters' fetches, not the whole run
- * (design decision 4). Nothing consumes it yet: finalize (Phase 5) merges the
- * result files into the state file and sweeps them; until then the chunk files
- * stay the authoritative queue that finalize rolls up, so BOTH are written.
- * The chunk-based ownership above is likewise kept for now: the worker's split
- * moves onto the state file's line ordinals (`pendingIdentities`/`assignedTo`)
- * in Phase 5, coupled to the SAME change that makes finalize result-based —
- * they land together, not one phase apart. Doing it EARLIER would either break
- * the still-chunk-based finalize or put two writers on one chunk. Doing it
- * LATER — leaving workers deriving from chunks after finalize consumes the
- * result files — would break Phase 5's recovery invariant: a finalize that
- * crashed before merging w<NN> into the state file would have that result file
- * overwritten on the next fire, because a chunk-derived worker sees the chunk
- * entries already terminal, skips them, and re-puts w<NN> without them, so
- * those chunk-terminal results vanish from both the state file (never merged)
- * and the result file (overwritten). A state-derived worker instead re-derives
- * that still-pending work from the very state file finalize merges into, so the
- * results reappear and re-merge idempotently. Phase 6 only deletes the
- * then-dead chunk code.
- *
- * A worker never writes the manifest, the roster, another slot's state or
- * another worker's chunks/results — every object keeps exactly one writer (its
- * own chunk files and its own `w<NN>` result object).
+ * The worker NEVER writes the state file, the manifest, another slot's objects
+ * or another worker's result file — every object keeps exactly one writer (its
+ * own `w<NN>` result object). Finalize is the single writer that merges the
+ * result files back into the state file; a worker re-derives its pending work
+ * from the SAME state file finalize merges into, so a finalize that crashed
+ * before merging a result file finds those characters still pending next fire
+ * and re-resolves them — they re-merge idempotently, nothing is lost (the
+ * recovery invariant, design decision 3).
  */
-import { gzipSync } from 'node:zlib';
 import type {
   OutcomeTally,
   QueuedCharacter,
-  SnapshotChunk,
   SnapshotCharacter,
   SnapshotManifest,
 } from '@classolek/shared';
-import {
-  addTallies,
-  emptyTally,
-  isChunkResolved,
-  rawChunkShardPath,
-  tallyOutcomes,
-} from '@classolek/shared';
+import { tallyOutcomes } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { RateLimiter } from '../rate-limit/limiter.js';
 import { workerSlot } from '../rate-limit/limiter-store.js';
@@ -72,8 +48,13 @@ import { LimiterPersistence } from '../rate-limit/limiter-persistence.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import type { CharacterSource } from '../sources/types.js';
-import { ChunkStore, ownedChunkIndices, pendingChunkIndices } from '../chunks/chunk-store.js';
-import { writeWorkerResults } from '../snapshot-state/state-store.js';
+import {
+  assignedTo,
+  pendingIdentities,
+  readState,
+  writeWorkerResults,
+  type PendingIdentity,
+} from '../snapshot-state/state-store.js';
 import { HOUR_MS } from './config.js';
 import { QuorumMonitor } from './worker-quorum.js';
 import { resolveCharacter, type WaitReporter } from './resolve-character.js';
@@ -100,8 +81,8 @@ export interface WorkerConfig {
    * Early stop: once at least this many workers have finished their run this
    * fire (any clean stop — drained, budget spent, rate-limit stall), the rest
    * checkpoint and stop instead of dragging the fire out (0 = disabled). Safe
-   * by construction: a stopped worker's chunks stay pending and resume under
-   * the same slot on the next fire.
+   * by construction: a stopped worker's owned characters stay pending in the
+   * state file and resume under the same slot on the next fire.
    */
   earlyStopQuorum: number;
   /** Marker sweep throttle override (test seam); see QUORUM_CHECK_INTERVAL_MS. */
@@ -146,17 +127,29 @@ export type WorkerStopReason =
 export interface WorkerSummary {
   workerIndex: number;
   stopReason: WorkerStopReason;
+  /**
+   * Pending characters this slot owned this run. (Named `assignedChunks` from
+   * the chunk-model era; it is a character count now — Phase 7 renames the
+   * display wording.)
+   */
   assignedChunks: number;
-  /** Chunks this run brought to full resolution. */
+  /**
+   * Characters this run brought to a terminal outcome (ok/private/dead/skipped).
+   * (Named `chunksResolved` from the chunk-model era; Phase 7 renames it.)
+   */
   chunksResolved: number;
   requests: number;
+  /**
+   * Result-file checkpoints written this run (the periodic overwrites plus the
+   * final flush). (Named `shardsWritten` from the chunk-model era — there are no
+   * raw shards now; Phase 7 renames it.)
+   */
   shardsWritten: number;
-  /** Outcome tally across the chunks this worker touched (after this run). */
+  /** Outcome tally across the characters this worker resolved this run. */
   outcomes: OutcomeTally;
 }
 
 export class Worker {
-  private readonly chunks: ChunkStore;
   private readonly limiterState: LimiterPersistence;
   private readonly quorum: QuorumMonitor;
 
@@ -164,7 +157,6 @@ export class Worker {
     private readonly config: WorkerConfig,
     private readonly deps: WorkerDeps,
   ) {
-    this.chunks = new ChunkStore(deps.objectStore);
     this.limiterState = new LimiterPersistence(deps.objectStore);
     this.quorum = new QuorumMonitor(
       {
@@ -193,12 +185,12 @@ export class Worker {
     const manifest = await this.deps.checkpointStore.load(this.config.league);
 
     if (!manifest || manifest.phase !== 'collecting') {
-      return this.summarize('no_work', 0, 0, 0, 0, emptyTally());
+      return this.summarize('no_work', 0, 0, 0, 0, []);
     }
     // An over-age snapshot is finalize's to abort — don't spend requests on it.
     if (runStart - Date.parse(manifest.ladderCapturedAt) > this.config.maxAgeHours * HOUR_MS) {
       this.log('worker: snapshot aged past max age — leaving it to finalize');
-      return this.summarize('no_work', 0, 0, 0, 0, emptyTally());
+      return this.summarize('no_work', 0, 0, 0, 0, []);
     }
 
     const scope = { league: this.config.league, slot, ip: this.deps.publicIp };
@@ -208,25 +200,20 @@ export class Worker {
       );
     }
 
-    // Load only the chunks this slot owns (not the whole snapshot): the reads
-    // scale with a worker's share of the queue, and a near-drained snapshot
-    // stops costing every worker a full-snapshot read on every fire.
-    const owned = await this.chunks.loadMany(
-      manifest.league,
-      manifest.snapshotId,
-      ownedChunkIndices(manifest.chunkCount, this.config.workerIndex, this.config.workerCount),
+    // Stream the state file ONCE to enumerate the still-pending identities, then
+    // keep only the ordinals this slot owns (ordinal % workerCount === index).
+    // The read scales with the whole file but holds no payloads — only the small
+    // owned-identity list survives. A near-drained snapshot still costs one
+    // streamed read per worker per fire (design decision 5).
+    const pending = await pendingIdentities(
+      readState(this.deps.objectStore, manifest.league, manifest.snapshotId),
     );
-    const ownedByIndex = new Map(owned.map((chunk) => [chunk.chunkIndex, chunk]));
-    const assigned = pendingChunkIndices(owned);
+    const owned = ownedPending(pending, this.config.workerIndex, this.config.workerCount);
     this.log(
-      `worker ${slot}: ${assigned.length} pending chunk(s) assigned of ` +
-        `${manifest.chunkCount} total`,
+      `worker ${slot}: ${owned.length} pending character(s) assigned of ${pending.length} total`,
     );
 
     let requests = 0;
-    let shardsWritten = 0;
-    let chunksResolved = 0;
-    const touched = emptyTally();
     let stop: WorkerStopReason = 'assigned_drained';
 
     // The v4 result file: every character this run resolves (any outcome change)
@@ -236,16 +223,18 @@ export class Worker {
     // flush is skipped when a periodic one already caught up.
     const results: SnapshotCharacter[] = [];
     let resultsAtLastFlush = 0;
+    let flushes = 0;
     const checkpointEvery = this.config.resultCheckpointEvery ?? DEFAULT_RESULT_CHECKPOINT_EVERY;
-    const checkpointResults = async (): Promise<void> => {
-      if (results.length - resultsAtLastFlush < checkpointEvery) return;
+    const flush = async (): Promise<void> => {
       await this.flushResults(manifest, results);
       resultsAtLastFlush = results.length;
+      flushes += 1;
+    };
+    const checkpointResults = async (): Promise<void> => {
+      if (results.length - resultsAtLastFlush >= checkpointEvery) await flush();
     };
 
-    for (const chunkIndex of assigned) {
-      const chunk = ownedByIndex.get(chunkIndex);
-      if (!chunk) continue;
+    for (const identity of owned) {
       if (this.deps.limiter.isAborted) {
         stop = 'rate_limited';
         break;
@@ -259,82 +248,8 @@ export class Worker {
         break;
       }
 
-      const visit = await this.workChunk(manifest, chunk, runStart, results, checkpointResults);
-      requests += visit.requests;
-      shardsWritten += visit.shardsWritten;
-      if (visit.resolved) chunksResolved += 1;
-      addTallies(touched, tallyOutcomes(chunk.characters));
-      if (visit.stopped) {
-        stop = visit.stopped;
-        break;
-      }
-    }
-
-    // Final result checkpoint on the clean stop: the slot object reflects every
-    // character resolved this run (skipped when a periodic flush already did).
-    if (results.length > resultsAtLastFlush) await this.flushResults(manifest, results);
-
-    // Every clean stop ends this slot's job for the fire, so every one counts
-    // toward the early-stop quorum — not just a drained assignment. (A wave
-    // where most workers stall on saturated rate-limit windows would otherwise
-    // write no markers at all, and the stragglers would grind out their full
-    // budget while every finished sibling job waits on them.)
-    await this.quorum.markSelfDone(new Date(this.deps.clock.now()).toISOString(), stop);
-
-    await this.limiterState.save(
-      this.deps.limiter,
-      scope,
-      new Date(this.deps.clock.now()).toISOString(),
-    );
-    this.log(`worker ${slot}: stop=${stop} chunksResolved=${chunksResolved} requests=${requests}`);
-    return this.summarize(stop, assigned.length, chunksResolved, requests, shardsWritten, touched);
-  }
-
-  /**
-   * One visit to one owned chunk: clean orphan shards, resolve what fits in the
-   * budget (one pass — a still-retryable character heals across runs, not by
-   * being hammered in place), write the visit's records as one shard, then
-   * checkpoint the chunk.
-   */
-  private async workChunk(
-    manifest: SnapshotManifest,
-    chunk: SnapshotChunk,
-    runStart: number,
-    results: SnapshotCharacter[],
-    checkpointResults: () => Promise<void>,
-  ): Promise<{
-    requests: number;
-    shardsWritten: number;
-    resolved: boolean;
-    stopped: WorkerStopReason | undefined;
-  }> {
-    await this.deleteOrphanShards(manifest, chunk);
-
-    const records: unknown[] = [];
-    let requests = 0;
-    let stopped: WorkerStopReason | undefined;
-
-    for (const entry of chunk.characters) {
-      // Only not-yet-computed characters are workable; every other outcome
-      // (ok/private/dead/skipped) is terminal.
-      if (entry.outcome !== 'pending' && entry.outcome !== 'retryable') {
-        continue;
-      }
-      if (this.deps.limiter.isAborted) {
-        stopped = 'rate_limited';
-        break;
-      }
-      if (this.deps.clock.now() - runStart >= this.config.maxRunMillis) {
-        stopped = 'budget_exhausted';
-        break;
-      }
-      if (await this.quorum.shouldStop()) {
-        stopped = 'quorum_stopped';
-        break;
-      }
-      this.log(
-        `chunk ${chunk.chunkIndex}: fetching #${entry.rank} ${entry.account}/${entry.character}`,
-      );
+      this.log(`resolving #${identity.rank} ${identity.account}/${identity.character}`);
+      const entry = entryOf(identity);
       const before = { outcome: entry.outcome, attempts: entry.attempts };
       const result = await resolveCharacter(entry, this.config.maxAttempts, {
         clock: this.deps.clock,
@@ -345,11 +260,10 @@ export class Worker {
         maxWaitMs: this.config.maxWaitMillis,
       });
       requests += result.requests;
-      if (result.record !== undefined) records.push(result.record);
-      // Mirror the resolution into the v4 result file whenever this attempt
-      // moved the character (a new terminal outcome, or a burned retry attempt).
-      // A pure rate-limit/stall leaves it unchanged and unrecorded — it stays
-      // workable for a later run, exactly as in the chunk it was skipped from.
+      // Record the resolution whenever this attempt moved the character (a new
+      // terminal outcome, or a burned retry attempt). A pure rate-limit/stall
+      // leaves the entry unchanged and unrecorded — it stays pending in the
+      // state file and is re-derived by a later run.
       if (entry.outcome !== before.outcome || entry.attempts !== before.attempts) {
         results.push(toResultLine(entry, result.record));
         await checkpointResults();
@@ -366,54 +280,30 @@ export class Worker {
               ? 'too long to idle, checkpointing for the next run'
               : 'past the run budget, checkpointing'),
         );
-        stopped = result.deferred === 'max_wait' ? 'rate_limit_stall' : 'budget_exhausted';
+        stop = result.deferred === 'max_wait' ? 'rate_limit_stall' : 'budget_exhausted';
         break;
       }
     }
 
-    // Shard first, then the chunk checkpoint that owns it (crash in between
-    // leaves an orphan shard at seq == shardsWritten, removed on next visit).
-    let shardsWritten = 0;
-    if (records.length > 0) {
-      const key = rawChunkShardPath(
-        manifest.league,
-        manifest.snapshotId,
-        chunk.chunkIndex,
-        chunk.shardsWritten,
-      );
-      const ndjson = records.map((r) => JSON.stringify(r)).join('\n') + '\n';
-      await this.deps.objectStore.put(key, gzipSync(Buffer.from(ndjson, 'utf8')));
-      chunk.shardsWritten += 1;
-      shardsWritten = 1;
-    }
-    chunk.workerIndex = this.config.workerIndex;
-    await this.chunks.save(chunk);
+    // Final result checkpoint on the clean stop: the slot object reflects every
+    // character resolved this run (skipped when a periodic flush already did).
+    if (results.length > resultsAtLastFlush) await flush();
 
-    return { requests, shardsWritten, resolved: isChunkResolved(chunk), stopped };
-  }
+    // Every clean stop ends this slot's job for the fire, so every one counts
+    // toward the early-stop quorum — not just a drained assignment. (A wave
+    // where most workers stall on saturated rate-limit windows would otherwise
+    // write no markers at all, and the stragglers would grind out their full
+    // budget while every finished sibling job waits on them.)
+    await this.quorum.markSelfDone(new Date(this.deps.clock.now()).toISOString(), stop);
 
-  /**
-   * Clear the one shard a crash between the shard PUT and the chunk checkpoint
-   * can orphan. A visit writes exactly one shard at seq == shardsWritten and
-   * only then bumps the cursor and saves the chunk, so a resumed chunk has at
-   * most one orphan, always at seq == shardsWritten. A targeted DELETE (free in
-   * R2, a no-op when the key is absent) replaces the prefix LIST that scanning
-   * for it used to cost — one Class A operation saved per chunk visit. Any
-   * stray shard past the cursor (a legacy multi-orphan state) is still swept by
-   * finalize's full pre-publish scan before it can reach the transform.
-   */
-  private async deleteOrphanShards(
-    manifest: SnapshotManifest,
-    chunk: SnapshotChunk,
-  ): Promise<void> {
-    await this.deps.objectStore.delete(
-      rawChunkShardPath(
-        manifest.league,
-        manifest.snapshotId,
-        chunk.chunkIndex,
-        chunk.shardsWritten,
-      ),
+    await this.limiterState.save(
+      this.deps.limiter,
+      scope,
+      new Date(this.deps.clock.now()).toISOString(),
     );
+    const resolved = results.filter((r) => r.outcome !== 'retryable').length;
+    this.log(`worker ${slot}: stop=${stop} resolved=${resolved} requests=${requests}`);
+    return this.summarize(stop, owned.length, resolved, requests, flushes, results);
   }
 
   /**
@@ -441,7 +331,7 @@ export class Worker {
     chunksResolved: number,
     requests: number,
     shardsWritten: number,
-    outcomes: OutcomeTally,
+    resolved: readonly SnapshotCharacter[],
   ): WorkerSummary {
     return {
       workerIndex: this.config.workerIndex,
@@ -450,13 +340,42 @@ export class Worker {
       chunksResolved,
       requests,
       shardsWritten,
-      outcomes,
+      outcomes: tallyOutcomes(resolved),
     };
   }
 }
 
+/** The pending identities a worker slot owns this run (ordinal round-robin). */
+function ownedPending(
+  pending: readonly PendingIdentity[],
+  workerIndex: number,
+  workerCount: number,
+): PendingIdentity[] {
+  const owned = new Set(
+    assignedTo(
+      pending.map((p) => p.ordinal),
+      workerIndex,
+      workerCount,
+    ),
+  );
+  return pending.filter((p) => owned.has(p.ordinal));
+}
+
+/** A resolvable QueuedCharacter from a pending identity (resolveCharacter mutates it in place). */
+function entryOf(identity: PendingIdentity): QueuedCharacter {
+  return {
+    rank: identity.rank,
+    account: identity.account,
+    character: identity.character,
+    class: identity.class,
+    level: identity.level,
+    outcome: identity.outcome,
+    attempts: identity.attempts,
+  };
+}
+
 /**
- * Build one v4 state line from a just-resolved chunk entry. Copies the queued
+ * Build one v4 result line from a just-resolved entry. Copies the queued
  * identity + the outcome/attempts the resolution wrote in place; for an `ok`
  * character it also inlines the raw payloads from `resolveCharacter`'s record
  * (`items` → `characterData`, `passives` → `passiveTree`), matching

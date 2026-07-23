@@ -1,6 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import type { IndexFile, SnapshotMeta } from '@classolek/shared';
-import { INDEX_PATH, ipPacePath, snapshotMetaPath, workerStatePath } from '@classolek/shared';
+import {
+  INDEX_PATH,
+  ipPacePath,
+  snapshotMetaPath,
+  snapshotStatePath,
+  workerStatePath,
+} from '@classolek/shared';
 import { getJson } from '../checkpoint/object-store.js';
 import { PaceStateStore } from '../rate-limit/pace-store.js';
 import type { PassiveTree, TreeOrigin } from '../transform/tree-source.js';
@@ -44,8 +50,8 @@ describe('Finalizer rollup and incremental publish', () => {
     expect(meta?.characterCount).toBe(manifest?.outcomes.ok);
     const index = await getJson<IndexFile>(h.objectStore, INDEX_PATH);
     expect(index?.leagues[0]?.snapshots[0]?.complete).toBe(false);
-    // Raw stays (the final transform still needs it).
-    expect(h.objectStore.keys().some((k) => k.startsWith('raw/'))).toBe(true);
+    // The state file (the v4 raw) stays — the final transform still needs it.
+    expect(h.objectStore.keys()).toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
   });
 
   it('skips publishing when nothing has been collected yet', async () => {
