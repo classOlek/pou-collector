@@ -21,7 +21,6 @@ const base = {
   maxWaitMillis: 300_000,
   maxAgeHours: 48,
   maxAttempts: 3,
-  chunkSize: 50,
   workerCount: 4,
   earlyStopQuorum: 0,
   collectCooldownMinutes: 30,
@@ -81,11 +80,11 @@ describe('parseConfig', () => {
   it('overrides any numeric key from its env var (repo Actions variables)', () => {
     const cfg = parseConfig(base, {
       COLLECTOR_WORKER_COUNT: '8',
-      COLLECTOR_CHUNK_SIZE: '25',
+      COLLECTOR_MAX_ATTEMPTS: '25',
       COLLECTOR_ABORT_COOLDOWN_HOURS: '3',
     });
     expect(cfg.workerCount).toBe(8);
-    expect(cfg.chunkSize).toBe(25);
+    expect(cfg.maxAttempts).toBe(25);
     expect(cfg.abortCooldownHours).toBe(3);
     expect(cfg.depth).toBe(500); // untouched keys keep the file value
   });
@@ -94,7 +93,9 @@ describe('parseConfig', () => {
     expect(() => parseConfig(base, { COLLECTOR_WORKER_COUNT: 'many' })).toThrow(
       /COLLECTOR_WORKER_COUNT/,
     );
-    expect(() => parseConfig(base, { COLLECTOR_CHUNK_SIZE: '-5' })).toThrow(/COLLECTOR_CHUNK_SIZE/);
+    expect(() => parseConfig(base, { COLLECTOR_MAX_ATTEMPTS: '-5' })).toThrow(
+      /COLLECTOR_MAX_ATTEMPTS/,
+    );
   });
 
   it('allows zero for earlyStopQuorum (disabled) but rejects negatives', () => {

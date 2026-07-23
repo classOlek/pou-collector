@@ -59,7 +59,6 @@ export function makeRunHarness(opts: RunHarnessOptions) {
     maxWaitMillis: 300_000,
     maxAgeHours: 48,
     maxAttempts: 3,
-    chunkSize: 5,
     workerCount: 2,
     earlyStopQuorum: 0,
     // Disabled by default so suites drive waves back-to-back; the coordinator

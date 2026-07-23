@@ -28,16 +28,16 @@ async function pendingKeys(h: Harness, snapshotId = 'snap-fixed'): Promise<strin
 describe('Worker: state-ordinal split + result files', () => {
   it('two workers resolve disjoint identities; together they cover everything exactly once', async () => {
     const entries = buildLadder(20);
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 2 } });
     await h.createFire();
 
     const w0 = await h.newWorker(0).runOnce();
     const w1 = await h.newWorker(1).runOnce();
 
     // Ordinal round-robin: w0 owns the 10 even lines, w1 the 10 odd lines.
-    expect(w0.assignedChunks).toBe(10);
-    expect(w1.assignedChunks).toBe(10);
-    expect(w0.chunksResolved + w1.chunksResolved).toBe(20);
+    expect(w0.assignedCharacters).toBe(10);
+    expect(w1.assignedCharacters).toBe(10);
+    expect(w0.charactersResolved + w1.charactersResolved).toBe(20);
 
     // Each slot's result file holds exactly its share; the two are disjoint and
     // together cover all 20 characters once.
@@ -64,7 +64,7 @@ describe('Worker: state-ordinal split + result files', () => {
       entry('priv', { kind: 'private' }),
       entry('dead', { kind: 'dead' }),
     ];
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
 
     const summary = await h.newWorker(0).runOnce();
@@ -96,7 +96,7 @@ describe('Worker: state-ordinal split + result files', () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
     const h = makeRunHarness({
       entries,
-      config: { chunkSize: 10, workerCount: 1, maxRunMillis: 20_000 },
+      config: { workerCount: 1, maxRunMillis: 20_000 },
     });
     await h.createFire();
 
@@ -133,7 +133,7 @@ describe('Worker: state-ordinal split + result files', () => {
     const entries = Array.from({ length: 5 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
     const h = makeRunHarness({
       entries,
-      config: { chunkSize: 5, workerCount: 1, resultCheckpointEvery: 1 },
+      config: { workerCount: 1, resultCheckpointEvery: 1 },
     });
     await h.createFire();
 
@@ -163,7 +163,7 @@ describe('Worker: state-ordinal split + result files', () => {
       entry('recovers', { kind: 'flaky', fails: 1 }), // retryable → ok next run
       entry('gone', { kind: 'flaky', fails: 10 }), // retryable → dead (attempts exhausted)
     ];
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
 
     // Fires 1 & 2 (worker → finalize): incremental publishes that keep the state
@@ -195,7 +195,7 @@ describe('Worker: state-ordinal split + result files', () => {
 describe('Worker: rate-limit resumability', () => {
   it('stops resumably on a rate-limit block, leaving its characters pending', async () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'throttle' }));
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
 
     const summary = await h.newWorker(0).runOnce();
@@ -211,7 +211,7 @@ describe('Worker: rate-limit resumability', () => {
 
   it('detects a saturated long window and checkpoints instead of idling (rate_limit_stall)', async () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
-    const h = makeRunHarness({ entries, config: { chunkSize: 10, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
 
     const saturatedAt = h.clock.now() - 1_000;
@@ -254,7 +254,7 @@ describe('Worker: rate-limit resumability', () => {
 
   it("collects immediately on a new runner IP instead of stalling on the old IP's spend", async () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
-    const h = makeRunHarness({ entries, config: { chunkSize: 10, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
 
     const saturatedAt = h.clock.now() - 1_000;
@@ -297,7 +297,7 @@ describe('Worker: rate-limit resumability', () => {
     // IP does not inherit it. With 15 workers over 10 lines, slot 7 owns line 7
     // and slot 8 owns line 8 (ordinal round-robin).
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
-    const h = makeRunHarness({ entries, config: { chunkSize: 1, workerCount: 15 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 15 } });
     await h.createFire();
 
     const saturatedAt = h.clock.now() - 1_000;
@@ -347,7 +347,7 @@ describe('Worker: rate-limit resumability', () => {
 
   it('keeps serving a client penalty across an IP change (no Retry-After evasion)', async () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
-    const h = makeRunHarness({ entries, config: { chunkSize: 10, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
 
     await new LimiterStateStore(h.objectStore).save(
@@ -375,7 +375,7 @@ describe('Worker: rate-limit resumability', () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
     const h = makeRunHarness({
       entries,
-      config: { chunkSize: 10, workerCount: 1, maxRunMillis: 15_000, maxWaitMillis: 600_000 },
+      config: { workerCount: 1, maxRunMillis: 15_000, maxWaitMillis: 600_000 },
     });
     await h.createFire();
 
@@ -398,7 +398,7 @@ describe('Worker: early-stop quorum', () => {
   it('stays inert with the quorum disabled or without a fire runId', async () => {
     const h = makeRunHarness({
       entries: buildLadder(10),
-      config: { chunkSize: 5, workerCount: 2 },
+      config: { workerCount: 2 },
     });
     await h.createFire();
 
@@ -408,7 +408,7 @@ describe('Worker: early-stop quorum', () => {
 
     const h2 = makeRunHarness({
       entries: buildLadder(10),
-      config: { chunkSize: 5, workerCount: 2, earlyStopQuorum: 1 },
+      config: { workerCount: 2, earlyStopQuorum: 1 },
     });
     await h2.createFire();
     const noRunId = await h2.newWorker(1, h2.api.client, '').runOnce();
@@ -419,7 +419,7 @@ describe('Worker: early-stop quorum', () => {
   it('stops a straggler once the quorum of siblings drained, resuming its work next fire', async () => {
     const h = makeRunHarness({
       entries: buildLadder(20),
-      config: { chunkSize: 5, workerCount: 2, earlyStopQuorum: 1 },
+      config: { workerCount: 2, earlyStopQuorum: 1 },
     });
     await h.createFire();
 
@@ -463,7 +463,7 @@ describe('Worker: early-stop quorum', () => {
   it('counts rate-limit-stalled siblings toward the quorum (any clean stop ends the job)', async () => {
     const h = makeRunHarness({
       entries: buildLadder(20),
-      config: { chunkSize: 5, workerCount: 2, earlyStopQuorum: 1 },
+      config: { workerCount: 2, earlyStopQuorum: 1 },
     });
     await h.createFire();
 
@@ -499,7 +499,7 @@ describe('Worker: early-stop quorum', () => {
     const entries = Array.from({ length: 10 }, (_, i) => entry(`${i}`, { kind: 'ok' }));
     const h = makeRunHarness({
       entries,
-      config: { chunkSize: 10, workerCount: 2, earlyStopQuorum: 1 },
+      config: { workerCount: 2, earlyStopQuorum: 1 },
     });
     await h.createFire();
 

@@ -6,7 +6,6 @@
   "maxWaitMillis": 300000,
   "maxAgeHours": 48,
   "maxAttempts": 3,
-  "chunkSize": 50,
   "workerCount": 15,
   "earlyStopQuorum": 11,
   "collectCooldownMinutes": 30,

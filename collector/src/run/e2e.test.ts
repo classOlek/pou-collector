@@ -29,7 +29,7 @@ describe('create → collect fires (workers → finalize) → published → idle
     // Two workers, small chunks, and a budget that forces multiple fires.
     const h = makeRunHarness({
       entries,
-      config: { chunkSize: 5, workerCount: 2, maxRunMillis: 25_000 },
+      config: { workerCount: 2, maxRunMillis: 25_000 },
     });
 
     // Build the roster, then seed the snapshot from it; collect fires drain it.

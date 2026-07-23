@@ -28,7 +28,7 @@ describe('Finalizer rollup and incremental publish', () => {
     // One worker with a tight budget: only part of the queue resolves this run.
     const h = makeRunHarness({
       entries,
-      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
+      config: { workerCount: 1, maxRunMillis: 30_000 },
     });
     await h.createFire();
     const worker = await h.newWorker(0).runOnce();
@@ -61,7 +61,7 @@ describe('Finalizer rollup and incremental publish', () => {
     // branch — the exact window where a lingering result file would re-merge.
     const h = makeRunHarness({
       entries: buildLadder(20),
-      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
+      config: { workerCount: 1, maxRunMillis: 30_000 },
     });
     await h.createFire();
     const worker = await h.newWorker(0).runOnce();
@@ -125,7 +125,7 @@ describe('Finalizer rollup and incremental publish', () => {
   it('treats a failed incremental publish as a warning, not an abort', async () => {
     const h = makeRunHarness({
       entries: buildLadder(20),
-      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
+      config: { workerCount: 1, maxRunMillis: 30_000 },
       treeOrigin: new FailingOrigin(),
     });
     await h.createFire();
@@ -141,7 +141,7 @@ describe('Finalizer rollup and incremental publish', () => {
 
   it('runs the final transform when the last chunk resolves: published, immutable, cleaned up', async () => {
     const entries = buildLadder(10);
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 2 } });
     await h.createFire();
     await h.newWorker(0).runOnce();
     await h.newWorker(1).runOnce();
@@ -167,7 +167,7 @@ describe('Finalizer rollup and incremental publish', () => {
 
   it('aborts a drained snapshot with zero public profiles and discards its artifacts', async () => {
     const entries = Array.from({ length: 5 }, (_, i) => entry(`${i}`, { kind: 'private' }));
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 1 } });
+    const h = makeRunHarness({ entries, config: { workerCount: 1 } });
     await h.createFire();
     await h.newWorker(0).runOnce();
 
@@ -182,7 +182,7 @@ describe('Finalizer rollup and incremental publish', () => {
   it('aborts an over-age snapshot, removing its incomplete published files and index entry', async () => {
     const h = makeRunHarness({
       entries: buildLadder(20),
-      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000, maxAgeHours: 1 },
+      config: { workerCount: 1, maxRunMillis: 30_000, maxAgeHours: 1 },
     });
     await h.createFire();
     await h.newWorker(0).runOnce();
@@ -219,7 +219,7 @@ describe('Finalizer per-IP pace-file sweep', () => {
     // paceFileTtlHours defaults to 3 in the harness.
     const h = makeRunHarness({
       entries: buildLadder(10),
-      config: { chunkSize: 5, workerCount: 1 },
+      config: { workerCount: 1 },
     });
     await h.createFire(); // seeds the manifest, state file and a coordinator slot file
     const pace = new PaceStateStore(h.objectStore);
@@ -245,7 +245,7 @@ describe('Finalizer per-IP pace-file sweep', () => {
   it('treats a sweep failure as a warning — finalize still publishes', async () => {
     const h = makeRunHarness({
       entries: buildLadder(20),
-      config: { chunkSize: 5, workerCount: 1, maxRunMillis: 30_000 },
+      config: { workerCount: 1, maxRunMillis: 30_000 },
     });
     await h.createFire();
     await h.newWorker(0).runOnce();

@@ -225,7 +225,7 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
 
   it('a forced fire closes a snapshot with zero collected characters as a clean abort, then creates', async () => {
     const entries = okLadder(6);
-    const h = makeRunHarness({ entries, config: { chunkSize: 3 } });
+    const h = makeRunHarness({ entries, config: {} });
     await h.createFire(); // nothing collected afterwards
 
     // Give the closed snapshot a stray result file to prove discard sweeps it.
@@ -250,7 +250,7 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
 
   it('a forced fire closes and recreates where an unforced fire no-ops', async () => {
     const entries = okLadder(4);
-    const h = makeRunHarness({ entries, config: { chunkSize: 2 } });
+    const h = makeRunHarness({ entries, config: {} });
     await h.createFire();
 
     // The snapshot is live — an unforced fire is idle-gated…
@@ -267,7 +267,7 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
     // ladder_capture is a crashed seed, not live work — the idle gate lets an
     // ordinary roster-triggered fire clean it up without operator force.
     const entries = okLadder(4);
-    const h = makeRunHarness({ entries, config: { chunkSize: 2 } });
+    const h = makeRunHarness({ entries, config: {} });
     await h.checkpointStore.save(
       fixtureManifest({
         league: LEAGUE,
@@ -292,7 +292,7 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
     // A v3 snapshot in flight at deploy: its current.json fails v4 validation, so
     // it is invisible to load/listAll and would never trip the idle gate or the
     // close loop. The create fire must still discard its orphaned artifacts.
-    const h = makeRunHarness({ entries: okLadder(4), config: { chunkSize: 2 } });
+    const h = makeRunHarness({ entries: okLadder(4), config: {} });
     await h.buildFire(); // roster is non-empty so the reseed can proceed
 
     await putJson(h.objectStore, chunkPath(LEAGUE, 'v3-snap', 0), { legacy: true });
@@ -326,7 +326,7 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
   it('leaves a foreign-schema PUBLISHED snapshot untouched and seeds over it (immutable)', async () => {
     // A v3 PUBLISHED snapshot is immutable (hard rule #4): its files and index
     // entry stay for v3 readers; only the checkpoint pointer is overwritten.
-    const h = makeRunHarness({ entries: okLadder(4), config: { chunkSize: 2 } });
+    const h = makeRunHarness({ entries: okLadder(4), config: {} });
     await h.buildFire();
 
     const legacyMeta = snapshotMetaPath(LEAGUE, 'v3-done');

@@ -21,13 +21,6 @@ export interface RunConfig {
   maxAgeHours: number;
   /** Retryable attempts before a character is declared dead. */
   maxAttempts: number;
-  /**
-   * LEGACY — sized the retired chunk files (the v4 state file has no chunks).
-   * Kept as an accepted config key so a still-set collector.json / Actions
-   * variable doesn't fail validation during the v4 rollout; nothing reads it
-   * anymore. Phase 7 drops it from RunConfig + config-file + collector.json.
-   */
-  chunkSize: number;
   /** Parallel worker jobs the workflow fans out per run. */
   workerCount: number;
   /**
