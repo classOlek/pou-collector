@@ -125,13 +125,16 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
     sockets: [{ group: 0, attr: 'S' }],
     socketedItems: [],
   };
-  // v5: an optional cluster jewel, shaped like a real GGG capture — a
-  // PassiveJewels item in the gear plus its expansion nodes in `hashes_ex` and
-  // their names/stats in `jewel_data[socket].subgraph.nodes`.
+  // v5: an optional cluster jewel, shaped like a real GGG capture. GGG returns
+  // tree jewels in the get-passive-skills payload (`passives.items`, NOT
+  // get-items), each stamped `inventoryId = 'PassiveJewels'`, with their
+  // expansion nodes in `hashes_ex` and their names/stats in
+  // `jewel_data[socket].subgraph.nodes`. `x` is the socket ordinal GGG uses.
   const clusterItem = spec.cluster
     ? [
         {
           inventoryId: 'PassiveJewels',
+          x: 0,
           name: spec.cluster.name ?? 'Foe Glisten',
           typeLine: spec.cluster.baseType ?? 'Large Cluster Jewel',
           baseType: spec.cluster.baseType ?? 'Large Cluster Jewel',
@@ -204,12 +207,15 @@ export function buildRawRecord(spec: CharSpec): Record<string, unknown> {
         level: spec.level ?? 100,
         experience: 4250334444,
       },
-      items: [bodyArmour, weapon, ...clusterItem, ...flaskItems],
+      // get-items: worn gear + flasks only. Tree jewels are NOT here — see below.
+      items: [bodyArmour, weapon, ...flaskItems],
     },
     passives: {
       hashes: spec.nodes ?? [123],
       hashes_ex: spec.cluster ? spec.cluster.nodes.map((n) => n.hash) : [],
-      items: [],
+      // get-passive-skills carries the passive-tree jewels (cluster jewels
+      // included) in its own `items` array — the payload the transform must scan.
+      items: [...clusterItem],
       jewel_data: jewelData,
       mastery_effects: spec.masteries ?? {},
     },
