@@ -1,7 +1,7 @@
 /**
  * Resolve one queued character (items + passives) against the character source,
  * applying the outcome policy (docs/ARCHITECTURE.md §5). Shared by the worker
- * step; kept free of chunk/manifest concerns so it stays a pure per-character
+ * step; kept free of queue/manifest concerns so it stays a pure per-character
  * unit: entry in → entry mutated + optional raw record out.
  */
 import type { QueuedCharacter } from '@classolek/shared';

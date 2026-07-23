@@ -13,8 +13,8 @@
  *    reseeding.
  *  - CREATE seeds the snapshot queue from the ENTIRE current roster (the
  *    growing character database that build-roster maintains), every character
- *    entering as `pending`, split into worker-sized chunks — this is what lets
- *    snapshots grow past the ladder window over time.
+ *    entering as `pending` in the single NDJSON.gz state file — this is what
+ *    lets snapshots grow past the ladder window over time.
  *
  * This step is REQUEST-FREE: it never reads the GGG ladder. All ladder capture
  * and roster merging lives in build-roster.ts; new-snapshot seeds from whatever
@@ -31,16 +31,22 @@
  * Runs alone in the shared `snapshot-collector` concurrency group, so a close
  * never overlaps a collect fire's workers (single writer per object, no locks).
  */
-import type { RosterCharacter, SnapshotManifest } from '@classolek/shared';
-import { SCHEMA_VERSION, chunkCountFor, emptyTally, isInFlight } from '@classolek/shared';
+import type {
+  RosterCharacter,
+  SnapshotCharacter,
+  SnapshotManifest,
+  SnapshotPhase,
+} from '@classolek/shared';
+import { SCHEMA_VERSION, emptyTally, isInFlight } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import { RosterStore } from '../roster/roster-store.js';
-import { ChunkStore, planChunks } from '../chunks/chunk-store.js';
+import { writeState } from '../snapshot-state/state-store.js';
 import { HOUR_MS, type RunConfig } from './config.js';
 import type { Finalizer } from './finalize.js';
 import { closeInFlightSnapshot, type CloseSummary } from './close-snapshot.js';
+import { discardSnapshotArtifacts } from './discard.js';
 
 export interface CreatorDeps {
   clock: Clock;
@@ -73,19 +79,16 @@ export interface CreateSummary {
   closed?: CloseSummary;
   rosterSize: number;
   totalCharacters: number;
-  chunkCount: number;
 }
 
 export class SnapshotCreator {
   private readonly rosters: RosterStore;
-  private readonly chunks: ChunkStore;
 
   constructor(
     private readonly config: RunConfig,
     private readonly deps: CreatorDeps,
   ) {
     this.rosters = new RosterStore(deps.objectStore);
-    this.chunks = new ChunkStore(deps.objectStore);
   }
 
   private log(message: string): void {
@@ -97,6 +100,16 @@ export class SnapshotCreator {
 
     const inFlight = (await this.deps.checkpointStore.listAll()).filter((m) => isInFlight(m.phase));
     const target = await this.deps.checkpointStore.load(this.config.league);
+
+    // v3→v4 migration (design decision 7): a foreign-schema manifest is invisible
+    // to load/listAll (both schema-validate), so it never trips the idle gate or
+    // the close loop below — an in-flight one would otherwise leave orphaned
+    // chunks/raw/state/results/incomplete-published behind. Discard it here before
+    // reseeding, extending the ladder_capture remnant rule across schemas. A
+    // foreign-schema PUBLISHED snapshot is immutable and left untouched (hard rule
+    // #4): its files stay readable by v3 readers, and the fresh seed simply
+    // overwrites the checkpoint pointer.
+    await this.discardForeignSchema();
 
     if (!this.deps.force) {
       // Idle gate: a live snapshot (collecting/transforming, any league) still
@@ -122,7 +135,7 @@ export class SnapshotCreator {
     // (skipped-marking + publish); an unforced fire reaches here only with
     // `ladder_capture` remnants, which close as a discard. A transform failure
     // inside a forced close throws (workflow alerts, phase left `transforming`);
-    // recovery needs no operator: with every chunk resolved the collect
+    // recovery needs no operator: with every character resolved the collect
     // workflow's next finalize retries the transform and publishes.
     let closed: CloseSummary | undefined;
     for (const manifest of inFlight) {
@@ -145,7 +158,6 @@ export class SnapshotCreator {
         stopReason: 'empty_roster',
         rosterSize: 0,
         totalCharacters: 0,
-        chunkCount: 0,
       };
       return closed ? { ...summary, closed } : summary;
     }
@@ -167,17 +179,14 @@ export class SnapshotCreator {
       // The moment this snapshot began; anchors both the age hard-block and the
       // interval guard. (No ladder is captured here — build-roster owns that.)
       ladderCapturedAt: new Date(now).toISOString(),
-      chunkSize: this.config.chunkSize,
-      chunkCount: 0,
       totalCharacters: 0,
       outcomes: emptyTally(),
-      resolvedChunks: 0,
     };
     await this.deps.checkpointStore.save(manifest);
     return manifest;
   }
 
-  /** Seed the whole roster as pending chunks and move the manifest to collecting. */
+  /** Seed the whole roster into the state file and move the manifest to collecting. */
   private async seedFromRoster(
     manifest: SnapshotManifest,
     characters: readonly RosterCharacter[],
@@ -185,36 +194,33 @@ export class SnapshotCreator {
     const total = characters.length;
 
     // The snapshot queue is the ENTIRE roster, every character entering as
-    // `pending`, split into worker-sized chunks. Chunks are re-seeded wholesale
-    // if a crash interrupted a previous seed (the manifest only moves to
-    // `collecting` after every chunk file is durable).
-    await this.chunks.deleteAll(this.config.league, manifest.snapshotId);
-    const chunks = planChunks(
+    // `pending`, roster order preserved (line 0 is the top of the ladder).
+    //
+    // v4: the authoritative queue is the single NDJSON.gz STATE FILE — one line
+    // per character, written whole here (the put is atomic on R2). It is written
+    // BEFORE the manifest moves to `collecting`, so a crash in between is a
+    // ladder_capture remnant the next create fire discards (design decision:
+    // "state file first, manifest second"). `writeState` overwrites the object,
+    // so a partial earlier seed is fully replaced — no pre-delete needed.
+    await writeState(
+      this.deps.objectStore,
       this.config.league,
       manifest.snapshotId,
-      characters,
-      this.config.chunkSize,
+      seedLines(characters),
     );
-    for (const chunk of chunks) await this.chunks.save(chunk);
 
     const collecting: SnapshotManifest = {
       ...manifest,
       phase: 'collecting',
-      chunkCount: chunkCountFor(total, this.config.chunkSize),
       totalCharacters: total,
       outcomes: { ...emptyTally(), pending: total },
-      resolvedChunks: 0,
     };
     await this.deps.checkpointStore.save(collecting);
-    this.log(
-      `seed: snapshot=${collecting.snapshotId} characters=${total} ` +
-        `chunks=${collecting.chunkCount} (size ${this.config.chunkSize})`,
-    );
+    this.log(`seed: snapshot=${collecting.snapshotId} characters=${total}`);
     return {
       stopReason: 'created',
       rosterSize: total,
       totalCharacters: total,
-      chunkCount: collecting.chunkCount,
     };
   }
 
@@ -223,14 +229,51 @@ export class SnapshotCreator {
       stopReason,
       rosterSize: target?.totalCharacters ?? 0,
       totalCharacters: target?.totalCharacters ?? 0,
-      chunkCount: target?.chunkCount ?? 0,
     };
+  }
+
+  /**
+   * Discard an in-flight snapshot whose current.json is a FOREIGN schema (the
+   * v3→v4 migration). `peek` reads the raw manifest past `load`'s schema gate;
+   * a matching-schema or absent checkpoint is a no-op. Only in-flight foreign
+   * snapshots are cleaned — a foreign published/aborted one keeps its (immutable
+   * or already-discarded) files and is simply overwritten by the reseed.
+   */
+  private async discardForeignSchema(): Promise<void> {
+    const foreign = await this.deps.checkpointStore.peek(this.config.league);
+    if (!foreign || foreign.schemaVersion === SCHEMA_VERSION) return;
+    if (!isInFlight(foreign.phase as SnapshotPhase)) return;
+    this.log(
+      `create: discarding foreign-schema (v${String(foreign.schemaVersion)}) in-flight ` +
+        `snapshot ${foreign.snapshotId} before reseeding`,
+    );
+    await discardSnapshotArtifacts(
+      this.deps.objectStore,
+      this.deps.clock,
+      this.config.league,
+      foreign.snapshotId,
+    );
+    await this.deps.checkpointStore.clear(this.config.league);
   }
 
   private within(iso: string | undefined, now: number, hours: number): boolean {
     if (iso === undefined) return false;
     return now - Date.parse(iso) < hours * HOUR_MS;
   }
+}
+
+/** Seed lines for a fresh snapshot: every roster character `pending`, no
+ *  payloads, roster order preserved (rank ascending — line 0 is the top). */
+function seedLines(characters: readonly RosterCharacter[]): SnapshotCharacter[] {
+  return characters.map((c) => ({
+    rank: c.rank,
+    account: c.account,
+    character: c.character,
+    class: c.class,
+    level: c.level,
+    outcome: 'pending',
+    attempts: 0,
+  }));
 }
 
 function defaultSnapshotId(now: number): string {

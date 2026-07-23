@@ -39,9 +39,12 @@ consumer (the web reader) by hand — a change here is a schema change: bump
 2. **Public profiles only.** Private profiles are marked and skipped. Never
    attempt any privacy bypass.
 3. **Resumable by construction.** State lives in R2; each run is a re-entrant
-   continuation off the checkpoint + chunk files. Never assume a snapshot fits in
-   one run. A chunk has exactly one owning worker per run
-   (`chunkIndex % workerCount`) — never let two writers share an R2 object.
+   continuation off the checkpoint + the per-league snapshot state file. Never
+   assume a snapshot fits in one run. Exactly one writer owns each R2 object:
+   the state file and manifest are written only by coordinate-create/finalize
+   (serialized by the shared concurrency group), and each worker owns its single
+   result file (`state-line ordinal % workerCount == workerIndex`) — never let
+   two writers share an R2 object.
 4. **Completed snapshots are immutable.** An in-progress snapshot
    (`complete: false`) is republished in place; the moment it publishes as
    complete it is frozen. Fixes are new transforms under a bumped

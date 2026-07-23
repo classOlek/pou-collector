@@ -2,19 +2,19 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { rawShardPrefix } from '@classolek/shared';
+import { snapshotStatePath } from '@classolek/shared';
 import { MemoryObjectStore } from '../checkpoint/object-store.js';
 import { CheckpointStore } from '../checkpoint/store.js';
 import { FakeClock } from '../rate-limit/clock.js';
+import { writeState } from '../snapshot-state/state-store.js';
 import { CachedTreeSource, type PassiveTree, type TreeOrigin } from './tree-source.js';
 import { executeTransform, type TransformStepConfig } from './execute.js';
 import type { TransformDeps } from './transform.js';
 import {
-  buildRawRecord,
+  buildStateLine,
   FakeTreeOrigin,
   transformingManifest,
 } from '../../test/transform-fixtures.js';
-import { putRawShard } from '../../test/helpers.js';
 
 const LEAGUE = 'TestLeague';
 const SNAP = 'snap-x';
@@ -59,9 +59,9 @@ const CONFIG: TransformStepConfig = { treeVersion: '3.25-test', maxTransformAtte
 describe('executeTransform anti-wedge', () => {
   it('aborts a drained snapshot with zero collected characters (all private/dead)', async () => {
     const store = new MemoryObjectStore();
-    // Queue is all private/dead → ok === 0. Some stray raw exists to be cleaned.
+    // Queue is all private/dead → ok === 0. A state file exists to be cleaned.
     const manifest = transformingManifest(LEAGUE, SNAP, [], { private: 2, dead: 1 });
-    await putRawShard(store, LEAGUE, SNAP, 0, []);
+    await writeState(store, LEAGUE, SNAP, []);
     const deps = makeDeps(store, new FakeTreeOrigin());
     await deps.checkpointStore.save(manifest);
 
@@ -71,35 +71,46 @@ describe('executeTransform anti-wedge', () => {
     const cp = await deps.checkpointStore.load(LEAGUE);
     expect(cp?.phase).toBe('aborted');
     expect(cp?.abortedAt).toBeDefined();
-    expect(store.keys().some((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP)))).toBe(false);
+    expect(store.keys()).not.toContain(snapshotStatePath(LEAGUE, SNAP));
   });
 
   it('advances transformAttempts and surfaces the error below the ceiling, then aborts at it', async () => {
     const store = new MemoryObjectStore();
-    await putRawShard(store, LEAGUE, SNAP, 0, OK_SPECS.map(buildRawRecord));
+    await writeState(
+      store,
+      LEAGUE,
+      SNAP,
+      OK_SPECS.map((s) => buildStateLine(s)),
+    );
     const manifest = transformingManifest(LEAGUE, SNAP, OK_SPECS);
     const deps = makeDeps(store, new FailingOrigin());
     await deps.checkpointStore.save(manifest);
 
-    // Attempt 1: below max → records the attempt, rethrows, phase stays transforming, raw kept.
+    // Attempt 1: below max → records the attempt, rethrows, phase stays
+    // transforming, the state file kept.
     await expect(executeTransform(manifest, CONFIG, deps)).rejects.toThrow(/tree unreachable/);
     const afterFirst = await deps.checkpointStore.load(LEAGUE);
     expect(afterFirst?.transformAttempts).toBe(1);
     expect(afterFirst?.phase).toBe('transforming');
-    expect(store.keys().some((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP)))).toBe(true);
+    expect(store.keys()).toContain(snapshotStatePath(LEAGUE, SNAP));
 
-    // Attempt 2 reaches the ceiling → clean abort, raw deleted (unpublishable).
+    // Attempt 2 reaches the ceiling → clean abort, state deleted (unpublishable).
     const outcome = await executeTransform(afterFirst!, CONFIG, deps);
     expect(outcome).toEqual({ kind: 'aborted', reason: 'max_transform_attempts' });
     const afterSecond = await deps.checkpointStore.load(LEAGUE);
     expect(afterSecond?.phase).toBe('aborted');
     expect(afterSecond?.abortedAt).toBeDefined();
-    expect(store.keys().some((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP)))).toBe(false);
+    expect(store.keys()).not.toContain(snapshotStatePath(LEAGUE, SNAP));
   });
 
   it('publishes on a healthy transform', async () => {
     const store = new MemoryObjectStore();
-    await putRawShard(store, LEAGUE, SNAP, 0, OK_SPECS.map(buildRawRecord));
+    await writeState(
+      store,
+      LEAGUE,
+      SNAP,
+      OK_SPECS.map((s) => buildStateLine(s)),
+    );
     const manifest = transformingManifest(LEAGUE, SNAP, OK_SPECS);
     const deps = makeDeps(store, new FakeTreeOrigin());
     await deps.checkpointStore.save(manifest);

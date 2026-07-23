@@ -3,9 +3,12 @@
  *
  * R2 has a 10 GB free-tier ceiling. Retention:
  *  - reports usage by key category (a single sized listing, no body fetches);
- *  - sweeps orphaned raw: any raw/<league>/<id>/ whose snapshot is not the
- *    in-flight checkpoint snapshot is garbage (raw is transient by definition),
- *    so this owns the raw a crashed publish could leak;
+ *  - sweeps orphaned transient state — legacy raw shards / chunk files AND the
+ *    v4 snapshot state file / per-worker result files — of any snapshot that is
+ *    not the in-flight checkpoint snapshot (all of it is transient by
+ *    definition), so this owns whatever a crashed publish or abort could leak
+ *    (including the multi-hundred-MB state file a crash in transform's
+ *    publish→delete window strands once its phase is already `published`);
  *  - trims the OLDEST detail Parquet first — ordered by snapshot age across ALL
  *    leagues (by meta.completedAt), a whole snapshot at a time — until usage is
  *    under budget, NEVER touching aggregates/meta/index, and always keeping the
@@ -22,8 +25,12 @@ import {
   parseChunkKey,
   parseDetailKey,
   parseRawKey,
+  parseSnapshotStateKey,
+  parseWorkerResultKey,
   rawShardPrefix,
   snapshotMetaPath,
+  snapshotStatePath,
+  workerResultPrefix,
 } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
@@ -49,7 +56,11 @@ export interface RetentionSummary {
   budgetBytes: number;
   /** "<league>/<snapshotId>" of every snapshot whose detail was trimmed. */
   detailSnapshotsTrimmed: string[];
-  /** "<league>/<snapshotId>" of every orphaned raw prefix swept. */
+  /**
+   * "<league>/<snapshotId>" of every orphaned transient group swept (raw /
+   * chunk / snapshot-state / worker-result). A snapshot with more than one such
+   * group appears once per group, mirroring the pre-existing raw+chunk behavior.
+   */
   rawSnapshotsSwept: string[];
   bytesFreed: number;
 }
@@ -74,6 +85,8 @@ function emptyUsage(): Record<KeyCategory, number> {
     tree: 0,
     checkpoint: 0,
     roster: 0,
+    'snapshot-state': 0,
+    'worker-result': 0,
     chunk: 0,
     worker: 0,
     ip: 0,
@@ -94,8 +107,13 @@ export async function runRetention(
   for (const info of all) usageByPrefix[classifyKey(info.key)] += info.size;
   let totalBytes = all.reduce((sum, info) => sum + info.size, 0);
 
-  // 1. Sweep orphaned raw and chunk files (owns what a crashed publish/abort
-  //    leaks): any raw/chunk group whose snapshot is not in-flight is garbage.
+  // 1. Sweep orphaned transient state (owns what a crashed publish/abort leaks):
+  //    any group whose snapshot is not in-flight is garbage. Covers the v4
+  //    state file / per-worker result files AND the legacy raw shards / chunk
+  //    files, so a crash in transform's publish→delete window (manifest already
+  //    `published`, so not in-flight) can no longer strand the state file
+  //    forever. Each toPrefix below must produce the exact string added to the
+  //    in-flight guard set for its category — that is the single-owner invariant.
   const inflightManifests = (await deps.checkpointStore.listAll()).filter((m) =>
     isInFlight(m.phase),
   );
@@ -103,6 +121,8 @@ export async function runRetention(
     inflightManifests.flatMap((m) => [
       rawShardPrefix(m.league, m.snapshotId),
       chunkPrefix(m.league, m.snapshotId),
+      snapshotStatePath(m.league, m.snapshotId),
+      workerResultPrefix(m.league, m.snapshotId),
     ]),
   );
   const rawSnapshotsSwept: string[] = [];
@@ -110,6 +130,8 @@ export async function runRetention(
   for (const [category, groups] of [
     ['raw', groupByPrefix(all, parseRawKey, rawShardPrefix)],
     ['chunk', groupByPrefix(all, parseChunkKey, chunkPrefix)],
+    ['snapshot-state', groupByPrefix(all, parseSnapshotStateKey, snapshotStatePath)],
+    ['worker-result', groupByPrefix(all, parseWorkerResultKey, workerResultPrefix)],
   ] as const) {
     for (const [prefix, group] of groups) {
       if (inflight.has(prefix)) continue;

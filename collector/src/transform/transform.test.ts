@@ -3,30 +3,46 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { gzipSync } from 'node:zlib';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { AggregateFile, AggregateKind, IndexFile, SnapshotMeta } from '@classolek/shared';
+import type {
+  AggregateFile,
+  AggregateKind,
+  IndexFile,
+  SnapshotCharacter,
+  SnapshotMeta,
+} from '@classolek/shared';
 import {
   INDEX_PATH,
   SCHEMA_VERSION,
-  rawChunkShardPath,
-  rawShardPrefix,
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
+  snapshotStatePath,
 } from '@classolek/shared';
 import { MemoryObjectStore, getJson } from '../checkpoint/object-store.js';
 import { CheckpointStore } from '../checkpoint/store.js';
 import { FakeClock } from '../rate-limit/clock.js';
+import { writeState } from '../snapshot-state/state-store.js';
 import { DuckDb } from './duckdb.js';
 import { CachedTreeSource } from './tree-source.js';
 import { runTransform, type TransformDeps } from './transform.js';
 import { TransformValidationError } from './validate.js';
 import {
-  buildRawRecord,
+  buildStateLine,
   type CharSpec,
   FakeTreeOrigin,
   transformingManifest,
 } from '../../test/transform-fixtures.js';
-import { putRawShard } from '../../test/helpers.js';
+
+/** Seed the snapshot's single state file with `ok` lines (+ optional extra lines). */
+async function seedState(
+  store: MemoryObjectStore,
+  league: string,
+  snapshotId: string,
+  okSpecs: CharSpec[],
+  extra: SnapshotCharacter[] = [],
+): Promise<void> {
+  await writeState(store, league, snapshotId, [...okSpecs.map((s) => buildStateLine(s)), ...extra]);
+}
 
 const LEAGUE = 'TestLeague';
 const SNAP = 'snap-1';
@@ -111,8 +127,7 @@ function makeDeps(
 }
 
 async function seedGolden(store: MemoryObjectStore): Promise<void> {
-  await putRawShard(store, LEAGUE, SNAP, 0, SPECS.slice(0, 3).map(buildRawRecord));
-  await putRawShard(store, LEAGUE, SNAP, 1, SPECS.slice(3).map(buildRawRecord));
+  await seedState(store, LEAGUE, SNAP, SPECS);
 }
 
 async function readJson<T>(store: MemoryObjectStore, key: string): Promise<T> {
@@ -215,26 +230,25 @@ describe('runTransform golden file', () => {
     expect(index.leagues[0]?.snapshots[0]?.schemaVersion).toBe(SCHEMA_VERSION);
 
     expect((await deps.checkpointStore.load(LEAGUE))?.phase).toBe('published');
-    // Raw deleted only after a validated publish.
-    expect(store.keys().some((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP)))).toBe(false);
-    expect(summary.rawShardsDeleted).toBe(2);
+    // The state file (the v4 raw) is deleted only after a validated publish.
+    expect(store.keys()).not.toContain(snapshotStatePath(LEAGUE, SNAP));
+    expect(summary.stateFilesDeleted).toBe(1); // the one state file
   });
 
-  it('dedupes a character across shards, keeping the latest fetchedAt', async () => {
+  it('dedupes a character with two state lines, keeping the latest fetchedAt', async () => {
     const store = new MemoryObjectStore();
-    const older = buildRawRecord({
+    const older = buildStateLine({
       ...SPECS[0]!,
       fetchedAt: '2026-07-17T00:00:00.000Z',
       mainSkill: 'Cyclone',
     });
-    const newer = buildRawRecord({
+    const newer = buildStateLine({
       ...SPECS[0]!,
       fetchedAt: '2026-07-17T00:20:00.000Z',
       mainSkill: 'Lightning Strike',
     });
-    // Same (account, character) in two shards — orphan/re-collect edge case.
-    await putRawShard(store, LEAGUE, SNAP, 0, [older]);
-    await putRawShard(store, LEAGUE, SNAP, 1, [newer]);
+    // Two `ok` lines for the same (account, character) — the dedup SQL keeps one.
+    await writeState(store, LEAGUE, SNAP, [older, newer]);
     const manifest = transformingManifest(LEAGUE, SNAP, [SPECS[0]!]);
     const { deps } = makeDeps(store);
 
@@ -293,8 +307,15 @@ describe('runTransform golden file', () => {
 describe('runTransform incremental (incomplete) publish', () => {
   it('publishes collected-so-far data marked incomplete, keeping raw and the checkpoint', async () => {
     const store = new MemoryObjectStore();
-    // Only the first three characters are computed so far.
-    await putRawShard(store, LEAGUE, SNAP, 0, SPECS.slice(0, 3).map(buildRawRecord));
+    // Only the first three characters are computed so far (the rest still pending
+    // lines in the state file — the transform emits only the `ok` ones).
+    await seedState(
+      store,
+      LEAGUE,
+      SNAP,
+      SPECS.slice(0, 3),
+      SPECS.slice(3).map((s) => buildStateLine(s, 'pending')),
+    );
     const partial = transformingManifest(LEAGUE, SNAP, SPECS.slice(0, 3), {
       private: 1,
       pending: 4,
@@ -311,7 +332,7 @@ describe('runTransform incremental (incomplete) publish', () => {
     expect(summary.complete).toBe(false);
     expect(summary.characterCount).toBe(3);
     expect(summary.pendingCount).toBe(4);
-    expect(summary.rawShardsDeleted).toBe(0);
+    expect(summary.stateFilesDeleted).toBe(0);
 
     // The snapshot is visible immediately, marked incomplete.
     const meta = await readJson<SnapshotMeta>(store, snapshotMetaPath(LEAGUE, SNAP));
@@ -322,12 +343,13 @@ describe('runTransform incremental (incomplete) publish', () => {
     const index = await readJson<IndexFile>(store, INDEX_PATH);
     expect(index.leagues[0]?.snapshots[0]?.complete).toBe(false);
 
-    // Raw and the checkpoint are untouched — collection continues.
-    expect(store.keys().some((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP)))).toBe(true);
+    // The state file and the checkpoint are untouched — collection continues.
+    expect(store.keys()).toContain(snapshotStatePath(LEAGUE, SNAP));
     expect((await deps.checkpointStore.load(LEAGUE))?.phase).toBe('collecting');
 
     // Later, the drained snapshot republishes the same id as complete/immutable.
-    await putRawShard(store, LEAGUE, SNAP, 1, SPECS.slice(3).map(buildRawRecord), 1);
+    // The state file now holds all five as `ok`.
+    await seedState(store, LEAGUE, SNAP, SPECS);
     const drained = transformingManifest(LEAGUE, SNAP, SPECS, { private: 3 });
     await deps.checkpointStore.save(drained);
     const finalSummary = await runTransform(
@@ -343,15 +365,15 @@ describe('runTransform incremental (incomplete) publish', () => {
     const finalIndex = await readJson<IndexFile>(store, INDEX_PATH);
     expect(finalIndex.leagues[0]?.snapshots).toHaveLength(1);
     expect(finalIndex.leagues[0]?.snapshots[0]?.complete).toBe(true);
-    expect(store.keys().some((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP)))).toBe(false);
+    expect(store.keys()).not.toContain(snapshotStatePath(LEAGUE, SNAP));
   });
 });
 
 describe('runTransform validation gate (validate before delete)', () => {
-  it('blocks publish and keeps raw when coverage disagrees with the shards', async () => {
+  it('blocks publish and keeps the state file when coverage disagrees with it', async () => {
     const store = new MemoryObjectStore();
-    await seedGolden(store);
-    // Manifest claims 6 ok characters but the shards only hold 5.
+    await seedGolden(store); // 5 ok lines
+    // Manifest claims 6 ok characters but the state file only holds 5.
     const manifest = transformingManifest(LEAGUE, SNAP, [
       ...SPECS,
       {
@@ -369,17 +391,16 @@ describe('runTransform validation gate (validate before delete)', () => {
       runTransform(manifest, { treeVersion: '3.25-test', complete: true }, deps),
     ).rejects.toBeInstanceOf(TransformValidationError);
 
-    // Nothing published; raw kept; checkpoint still transforming.
+    // Nothing published; the state file kept; checkpoint still transforming.
     expect(store.keys().some((k) => k.startsWith('snapshots/'))).toBe(false);
-    expect(store.keys().filter((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP))).length).toBe(2);
+    expect(store.keys()).toContain(snapshotStatePath(LEAGUE, SNAP));
     expect((await deps.checkpointStore.load(LEAGUE))?.phase).toBe('transforming');
   });
 
-  it('blocks publish and keeps raw on a truncated (corrupt) gz shard', async () => {
+  it('blocks publish and keeps the state file on a truncated (corrupt) gz body', async () => {
     const store = new MemoryObjectStore();
-    await putRawShard(store, LEAGUE, SNAP, 0, SPECS.slice(0, 2).map(buildRawRecord));
-    // Overwrite shard 1 with a non-gzip body (a crash mid-write / corruption).
-    await store.put(rawChunkShardPath(LEAGUE, SNAP, 1, 0), new TextEncoder().encode('not-gzip'));
+    // A non-gzip state-file body (a crash mid-write / corruption).
+    await store.put(snapshotStatePath(LEAGUE, SNAP), new TextEncoder().encode('not-gzip'));
     const manifest = transformingManifest(LEAGUE, SNAP, SPECS.slice(0, 2));
     const { deps } = makeDeps(store);
 
@@ -387,15 +408,15 @@ describe('runTransform validation gate (validate before delete)', () => {
       runTransform(manifest, { treeVersion: '3.25-test', complete: true }, deps),
     ).rejects.toThrow();
     expect(store.keys().some((k) => k.startsWith('snapshots/'))).toBe(false);
-    expect(store.keys().filter((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP))).length).toBe(2);
+    expect(store.keys()).toContain(snapshotStatePath(LEAGUE, SNAP));
   });
 
-  it('blocks publish and keeps raw on an invalid JSON line', async () => {
+  it('blocks publish and keeps the state file on an invalid JSON line', async () => {
     const store = new MemoryObjectStore();
-    const goodLine = JSON.stringify(buildRawRecord(SPECS[0]!));
-    // A shard whose second line is not valid JSON.
+    const goodLine = JSON.stringify(buildStateLine(SPECS[0]!));
+    // A state file whose second line is not valid JSON.
     await store.put(
-      rawChunkShardPath(LEAGUE, SNAP, 0, 0),
+      snapshotStatePath(LEAGUE, SNAP),
       gzipSync(Buffer.from(goodLine + '\n{ this is not json }\n', 'utf8')),
     );
     const manifest = transformingManifest(LEAGUE, SNAP, [SPECS[0]!]);
@@ -405,12 +426,13 @@ describe('runTransform validation gate (validate before delete)', () => {
       runTransform(manifest, { treeVersion: '3.25-test', complete: true }, deps),
     ).rejects.toThrow();
     expect(store.keys().some((k) => k.startsWith('snapshots/'))).toBe(false);
-    expect(store.keys().filter((k) => k.startsWith(rawShardPrefix(LEAGUE, SNAP))).length).toBe(1);
+    expect(store.keys()).toContain(snapshotStatePath(LEAGUE, SNAP));
   });
 
-  it('blocks publish cleanly with zero shards (no DuckDB read_json([]) crash)', async () => {
+  it('blocks publish cleanly with zero ok lines (no DuckDB read_json([]) crash)', async () => {
     const store = new MemoryObjectStore();
-    // Manifest claims one ok character but no shards exist at all (lost raw).
+    // Manifest claims one ok character but the state file holds no `ok` lines.
+    await writeState(store, LEAGUE, SNAP, []);
     const manifest = transformingManifest(LEAGUE, SNAP, [SPECS[0]!]);
     const { deps } = makeDeps(store);
 

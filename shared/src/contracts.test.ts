@@ -1,12 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import type { QueuedCharacter } from './contracts.js';
+import type { QueuedCharacter, SnapshotCharacter } from './contracts.js';
 import {
   addTallies,
-  chunkCountFor,
   coverageOf,
   coverageOfTally,
   emptyTally,
-  isChunkResolved,
   isInFlight,
   pendingOfTally,
   percentage,
@@ -36,6 +34,25 @@ function q(outcome: QueuedCharacter['outcome']): QueuedCharacter {
     outcome,
     attempts: 1,
   };
+}
+
+/** A state-file line: identity + outcome, with raw payloads only when `ok`. */
+function sc(outcome: SnapshotCharacter['outcome']): SnapshotCharacter {
+  const entry: SnapshotCharacter = {
+    rank: 1,
+    account: 'a',
+    character: 'c',
+    class: 'Witch',
+    level: 98,
+    outcome,
+    attempts: 1,
+  };
+  if (outcome === 'ok') {
+    entry.fetchedAt = '2026-07-23T00:00:00.000Z';
+    entry.characterData = { items: [] };
+    entry.passiveTree = { hashes: [] };
+  }
+  return entry;
 }
 
 describe('outcome tallies (single production implementation)', () => {
@@ -73,6 +90,23 @@ describe('outcome tallies (single production implementation)', () => {
     expect(coverageOf([])).toEqual({ ok: 0, private: 0, dead: 0 });
   });
 
+  it('carries over to SnapshotCharacter (state-file lines) unchanged', () => {
+    // The v4 state file is SnapshotCharacter[]; the tally helpers read only the
+    // `outcome` field, so they apply to it without a separate implementation —
+    // the raw characterData/passiveTree payloads on `ok` lines are ignored.
+    const lines: SnapshotCharacter[] = [sc('ok'), sc('ok'), sc('private'), sc('pending')];
+    expect(tallyOutcomes(lines)).toEqual({
+      pending: 1,
+      ok: 2,
+      private: 1,
+      retryable: 0,
+      dead: 0,
+      skipped: 0,
+    });
+    expect(coverageOf(lines)).toEqual({ ok: 2, private: 1, dead: 0 });
+    expect(pendingOfTally(tallyOutcomes(lines))).toBe(1);
+  });
+
   it('sums per-chunk tallies into a rollup (finalize path)', () => {
     const rollup = emptyTally();
     addTallies(rollup, tallyOutcomes([q('ok'), q('pending')]));
@@ -81,23 +115,6 @@ describe('outcome tallies (single production implementation)', () => {
     expect(coverageOfTally(rollup)).toEqual({ ok: 2, private: 1, dead: 0 });
     // Not-yet-computed = pending + retryable (both get another sweep).
     expect(pendingOfTally(rollup)).toBe(2);
-  });
-});
-
-describe('chunk helpers', () => {
-  it('resolves a chunk only when no character awaits computation', () => {
-    expect(isChunkResolved({ characters: [q('ok'), q('private'), q('dead')] })).toBe(true);
-    expect(isChunkResolved({ characters: [q('ok'), q('pending')] })).toBe(false);
-    expect(isChunkResolved({ characters: [q('ok'), q('retryable')] })).toBe(false);
-    // Skipped is terminal: closing a snapshot resolves its chunks.
-    expect(isChunkResolved({ characters: [q('ok'), q('skipped')] })).toBe(true);
-    expect(isChunkResolved({ characters: [] })).toBe(true);
-  });
-
-  it('splits a character total into ceil(total / chunkSize) chunks', () => {
-    expect(chunkCountFor(15000, 50)).toBe(300);
-    expect(chunkCountFor(151, 50)).toBe(4);
-    expect(chunkCountFor(0, 50)).toBe(0);
   });
 });
 

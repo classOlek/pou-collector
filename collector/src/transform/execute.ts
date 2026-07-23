@@ -12,7 +12,7 @@
  *    phase left `transforming` so the next run retries.
  */
 import type { SnapshotManifest } from '@classolek/shared';
-import { rawShardPrefix } from '@classolek/shared';
+import { snapshotStatePath, workerResultPrefix } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
@@ -39,12 +39,14 @@ async function abortSnapshot(
     abortedAt: new Date(deps.clock.now()).toISOString(),
     transformAttempts: attempts,
   });
-  // Unpublishable raw is garbage — delete it (the abort cooldown then gates retry).
-  const keys = await listKeys(
+  // Unpublishable raw is garbage — delete the state file (the v4 raw) and any
+  // transient result files (the abort cooldown then gates retry).
+  const resultKeys = await listKeys(
     deps.objectStore,
-    rawShardPrefix(manifest.league, manifest.snapshotId),
+    workerResultPrefix(manifest.league, manifest.snapshotId),
   );
-  await Promise.all(keys.map((key) => deps.objectStore.delete(key)));
+  await Promise.all(resultKeys.map((key) => deps.objectStore.delete(key)));
+  await deps.objectStore.delete(snapshotStatePath(manifest.league, manifest.snapshotId));
 }
 
 export async function executeTransform(

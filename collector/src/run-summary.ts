@@ -9,6 +9,7 @@
  */
 import { appendFileSync } from 'node:fs';
 import type { LimiterMemory } from '@classolek/shared';
+import { pendingOfTally } from '@classolek/shared';
 import type { CoordinatorSummary } from './run/coordinator.js';
 import type { BuildSummary } from './run/build-roster.js';
 import type { CreateSummary } from './run/create-snapshot.js';
@@ -106,7 +107,7 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
     '## Coordinate run',
     '',
     table(
-      ['phase', 'stop reason', 'has work', 'workers', 'pending', 'total characters', 'chunks'],
+      ['phase', 'stop reason', 'has work', 'workers', 'pending', 'total characters'],
       [
         [
           summary.phase,
@@ -115,7 +116,6 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
           summary.workers.length,
           summary.pendingCount,
           summary.totalCharacters,
-          summary.chunkCount,
         ],
       ],
     ),
@@ -149,7 +149,6 @@ export function renderCoordinateSummary(summary: CoordinatorSummary): RenderedSu
       workers: summary.workers,
       pendingCount: summary.pendingCount,
       totalCharacters: summary.totalCharacters,
-      chunkCount: summary.chunkCount,
       ...(summary.blockedUntil !== undefined ? { blockedUntil: summary.blockedUntil } : {}),
     },
   };
@@ -213,10 +212,7 @@ export function renderCreateSummary(summary: CreateSummary): RenderedSummary {
       : '_No in-flight snapshot to close._',
     '',
     '### Seeded snapshot queue',
-    table(
-      ['roster size', 'total characters', 'chunks'],
-      [[summary.rosterSize, summary.totalCharacters, summary.chunkCount]],
-    ),
+    table(['roster size', 'total characters'], [[summary.rosterSize, summary.totalCharacters]]),
   ].join('\n');
 
   return {
@@ -237,7 +233,6 @@ export function renderCreateSummary(summary: CreateSummary): RenderedSummary {
       closed: summary.closed,
       rosterSize: summary.rosterSize,
       totalCharacters: summary.totalCharacters,
-      chunkCount: summary.chunkCount,
     },
   };
 }
@@ -287,19 +282,19 @@ export function renderWorkerSummary(
     `## Worker w${summary.workerIndex}`,
     '',
     table(
-      ['stop reason', 'assigned chunks', 'chunks resolved', 'requests', 'shards'],
+      ['stop reason', 'assigned', 'resolved', 'requests', 'result flushes'],
       [
         [
           summary.stopReason,
-          summary.assignedChunks,
-          summary.chunksResolved,
+          summary.assignedCharacters,
+          summary.charactersResolved,
           summary.requests,
-          summary.shardsWritten,
+          summary.resultFlushes,
         ],
       ],
     ),
     '',
-    '### Outcomes across touched chunks',
+    '### Outcomes across resolved characters',
     table(
       ['ok', 'private', 'dead', 'retryable', 'pending', 'skipped'],
       [[o.ok, o.private, o.dead, o.retryable, o.pending, o.skipped]],
@@ -314,16 +309,16 @@ export function renderWorkerSummary(
     outputs: {
       stop_reason: summary.stopReason,
       requests: String(summary.requests),
-      chunks_resolved: String(summary.chunksResolved),
+      characters_resolved: String(summary.charactersResolved),
     },
     json: {
       kind: 'worker',
       workerIndex: summary.workerIndex,
       stopReason: summary.stopReason,
-      assignedChunks: summary.assignedChunks,
-      chunksResolved: summary.chunksResolved,
+      assignedCharacters: summary.assignedCharacters,
+      charactersResolved: summary.charactersResolved,
       requests: summary.requests,
-      shardsWritten: summary.shardsWritten,
+      resultFlushes: summary.resultFlushes,
       outcomes: summary.outcomes,
       penaltyUntil: memory.penaltyUntil,
     },
@@ -336,8 +331,8 @@ export function renderFinalizeSummary(summary: FinalizeSummary): RenderedSummary
     '## Finalize run',
     '',
     table(
-      ['phase', 'stop reason', 'chunks resolved', 'chunks total'],
-      [[summary.phase, summary.stopReason, summary.resolvedChunks, summary.chunkCount]],
+      ['phase', 'stop reason', 'collected (ok)', 'pending'],
+      [[summary.phase, summary.stopReason, o.ok, pendingOfTally(o)]],
     ),
     '',
     '### Outcomes',
@@ -379,7 +374,7 @@ function renderTransformBlock(summary: TransformSummary): string {
         'dead',
         'pending',
         'skipped',
-        'raw deleted',
+        'state deleted',
       ],
       [
         [
@@ -391,7 +386,7 @@ function renderTransformBlock(summary: TransformSummary): string {
           summary.coverage.dead,
           summary.pendingCount,
           summary.skippedCount,
-          summary.rawShardsDeleted,
+          summary.stateFilesDeleted,
         ],
       ],
     ),

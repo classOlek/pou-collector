@@ -37,7 +37,6 @@ const collectingManifest = () =>
   fixtureManifest({
     phase: 'collecting',
     totalCharacters: 10,
-    chunkCount: 2,
     outcomes: { ...emptyTally(), pending: 4, retryable: 1, ok: 5 },
   });
 

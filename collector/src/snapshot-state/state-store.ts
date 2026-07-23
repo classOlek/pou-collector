@@ -1,0 +1,271 @@
+/**
+ * Snapshot state store (single-file redesign — the v4 replacement for
+ * chunks/chunk-store.ts). A snapshot's entire queue lives in ONE private
+ * NDJSON.gz object at state/<league>/snapshots/<id>.ndjson.gz: one line per
+ * character (a `SnapshotCharacter` — queued identity + outcome/attempts, plus
+ * the raw `characterData` / `passiveTree` payloads once resolved `ok`). The
+ * file IS the raw now; there is no separate raw shard.
+ *
+ * Streaming discipline (docs/PLAN_SNAPSHOT_STATE_REWORK.md §5): 15k+ characters
+ * × tens of KB of raw JSON is hundreds of MB — over V8's single-string cap — so
+ * the file is NEVER `JSON.parse`d as one document. Every reader/writer here goes
+ * line-at-a-time through gunzip/gzip and only ever holds one `SnapshotCharacter`
+ * (with its payloads) in memory at a time. The compressed bytes still transit
+ * whole (the ObjectStore seam is get/put of a full body), but the decompressed
+ * text never materializes as a single string.
+ *
+ * Ownership discipline (no locking anywhere), mirroring the chunk model it
+ * replaces: the state file is written whole only by the coordinator/create and
+ * finalize steps, which the workflow concurrency group serializes — so it never
+ * has two concurrent writers. Workers only read it (streamed) and write their
+ * own transient result object; finalize merges those results back in.
+ */
+import { createGunzip, createGzip } from 'node:zlib';
+import { Readable, Writable } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { createInterface } from 'node:readline';
+import type { QueuedCharacter, SnapshotCharacter } from '@classolek/shared';
+import { snapshotStatePath, workerResultPath } from '@classolek/shared';
+import type { ObjectStore } from '../checkpoint/object-store.js';
+
+/**
+ * A pending character's identity plus its line position in the state file. The
+ * `ordinal` (0-based line index, counting every line) is the split key workers
+ * partition on — it depends only on the file's line order, not on when a worker
+ * read it, so the split is stable and disjoint across slots (see `assignedTo`).
+ * Deliberately payload-free: enumerating what's left to collect must stay cheap
+ * even when the state file is hundreds of MB.
+ */
+export interface PendingIdentity {
+  /** 0-based position among all lines of the state file (the split key). */
+  ordinal: number;
+  rank: number;
+  account: string;
+  character: string;
+  class: string;
+  level: number;
+  /** 'pending' (never attempted) or 'retryable' (attempted, may retry). */
+  outcome: 'pending' | 'retryable';
+  attempts: number;
+}
+
+/**
+ * Stable identity key for a character (account + character, the roster's
+ * identity), NUL-joined (`\x00`) to match roster-store's `rosterKey` — the same
+ * identity that seeded the state file, so a result matches its state line. The
+ * separator is a literal NUL because it cannot appear in a PoE account or
+ * character name, so it is an unambiguous delimiter no name can forge; it is
+ * written as the `\x00` escape (never a raw NUL byte) so the source stays text
+ * and git/grep/diff keep working. Used to match result records to state lines
+ * during a merge. MUST stay byte-identical to `rosterKey` — the seed and the
+ * merge match on it.
+ */
+export function identityKey(c: Pick<QueuedCharacter, 'account' | 'character'>): string {
+  return `${c.account}\x00${c.character}`;
+}
+
+/**
+ * Index result records by identity for a merge, last write per identity winning.
+ * This is the small (bounded-per-fire) side of the streamed merge join — a fire
+ * resolves at most a rate-limited wave of characters, so holding their payloads
+ * in a map is bounded, unlike the full state file which is always streamed.
+ */
+export function indexResults(results: Iterable<SnapshotCharacter>): Map<string, SnapshotCharacter> {
+  const byIdentity = new Map<string, SnapshotCharacter>();
+  for (const record of results) byIdentity.set(identityKey(record), record);
+  return byIdentity;
+}
+
+/**
+ * Stream a snapshot's state file, yielding one `SnapshotCharacter` per line in
+ * file order. The whole compressed object is fetched up front (the get seam),
+ * then decompressed and split a line at a time — the decompressed text is never
+ * one string, so a hundreds-of-MB file stays within the heap. A missing state
+ * file (it is seeded once at create and never absent) and any non-JSON line are
+ * hard errors: a corrupt line means the only copy of collected data is damaged
+ * and must not be silently skipped.
+ */
+export async function* readState(
+  store: ObjectStore,
+  league: string,
+  snapshotId: string,
+): AsyncGenerator<SnapshotCharacter> {
+  const key = snapshotStatePath(league, snapshotId);
+  const bytes = await store.get(key);
+  if (!bytes) throw new Error(`snapshot state ${key} is missing`);
+  yield* decodeLines(bytes, key);
+}
+
+/**
+ * Stream one worker slot's result file by its exact key (finalize lists the
+ * results prefix and reads each `w<NN>` back). Same gzipped-NDJSON
+ * `SnapshotCharacter` format as the state file. A missing key yields nothing
+ * (a listed key should exist, but tolerate a race); a corrupt body throws, so
+ * the caller can decide to skip it — a result file is transient and
+ * re-derivable (its characters stay `pending`/`retryable` in the state file
+ * until merged), unlike the state file whose corruption is unrecoverable.
+ */
+export async function* readWorkerResultFile(
+  store: ObjectStore,
+  key: string,
+): AsyncGenerator<SnapshotCharacter> {
+  const bytes = await store.get(key);
+  if (!bytes) return;
+  yield* decodeLines(bytes, key);
+}
+
+/** Gunzip + line-split + JSON-parse one state/result body (corrupt line throws). */
+async function* decodeLines(bytes: Uint8Array, key: string): AsyncGenerator<SnapshotCharacter> {
+  const input = Readable.from(Buffer.from(bytes)).pipe(createGunzip());
+  const lines = createInterface({ input, crlfDelay: Infinity });
+  let ordinal = 0;
+  for await (const line of lines) {
+    if (line.length === 0) continue;
+    try {
+      yield JSON.parse(line) as SnapshotCharacter;
+    } catch (err) {
+      throw new Error(`corrupt line ${ordinal} in ${key}: ${(err as Error).message}`);
+    }
+    ordinal += 1;
+  }
+}
+
+/**
+ * Write an ordered stream of `SnapshotCharacter` lines to a snapshot's state
+ * file as gzipped NDJSON. The source is piped straight through gzip so the
+ * decompressed NDJSON is never held as one string; only the compressed result
+ * is assembled (the put seam takes a full body). The whole-file put is atomic
+ * on R2, so a state file is never observed half-written.
+ *
+ * Safe to feed from `readState`/`mergeResults` of the SAME id: `readState`
+ * fetches the compressed source whole before any line is pulled, and the put
+ * happens only after the source generator is fully drained — the read never
+ * races the write.
+ */
+export async function writeState(
+  store: ObjectStore,
+  league: string,
+  snapshotId: string,
+  lines: AsyncIterable<SnapshotCharacter> | Iterable<SnapshotCharacter>,
+): Promise<void> {
+  await store.put(snapshotStatePath(league, snapshotId), await encodeNdjson(lines));
+}
+
+/**
+ * Overwrite one worker slot's transient result file with the characters it
+ * resolved this run (state/<league>/results/<id>/w<NN>.ndjson.gz — same gzipped
+ * NDJSON `SnapshotCharacter` format as the state file). Exactly one worker owns
+ * a given `w<NN>` object (single writer by construction, the disjoint-by-slot
+ * discipline the chunk model gave chunk files), so the whole-file put is a safe
+ * overwrite: a worker checkpoints its progress by re-putting the full run so
+ * far. Finalize (Phase 5) lists these, `mergeResults` them into the state file,
+ * then sweeps them — a lingering file from a crashed finalize re-merges
+ * idempotently. The lines are streamed one at a time through gzip; only the
+ * bounded per-run result set (never the whole state) is ever held in memory.
+ */
+export async function writeWorkerResults(
+  store: ObjectStore,
+  league: string,
+  snapshotId: string,
+  workerIndex: number,
+  lines: AsyncIterable<SnapshotCharacter> | Iterable<SnapshotCharacter>,
+): Promise<void> {
+  await store.put(workerResultPath(league, snapshotId, workerIndex), await encodeNdjson(lines));
+}
+
+/**
+ * Encode an ordered stream of `SnapshotCharacter` lines to a gzipped NDJSON
+ * body. The source is piped straight through gzip so the decompressed NDJSON is
+ * never held as one string; only the compressed result is assembled (the put
+ * seam takes a full body). Shared by the state file and the per-worker result
+ * files — both are the same line-per-character format.
+ */
+async function encodeNdjson(
+  lines: AsyncIterable<SnapshotCharacter> | Iterable<SnapshotCharacter>,
+): Promise<Buffer> {
+  const parts: Buffer[] = [];
+  const collect = new Writable({
+    write(chunk: Buffer, _enc, cb) {
+      parts.push(Buffer.from(chunk));
+      cb();
+    },
+  });
+  await pipeline(Readable.from(toNdjson(lines)), createGzip(), collect);
+  return Buffer.concat(parts);
+}
+
+/** Serialize each character to a `\n`-terminated JSON line, one at a time. */
+async function* toNdjson(
+  lines: AsyncIterable<SnapshotCharacter> | Iterable<SnapshotCharacter>,
+): AsyncGenerator<string> {
+  for await (const character of lines) yield JSON.stringify(character) + '\n';
+}
+
+/**
+ * Streamed merge: rewrite `state` with matched identities replaced by their
+ * result record. This is a hash join with the huge relation (the state file)
+ * streamed and the small one (`results`) held in a map — never more than one
+ * state line is materialized at a time. A result whose identity is not in the
+ * state is ignored (the state is seeded from the full roster, so every result
+ * identity exists; ignoring is the safe, duplicate-free behavior otherwise).
+ *
+ * Idempotent by construction: `results` is indexed last-write-wins, and each
+ * matched line is replaced by the same record on every pass, so re-merging the
+ * same results yields byte-identical output — the recovery path for a finalize
+ * that crashed before deleting its result files (no special-casing needed).
+ */
+export async function* mergeResults(
+  state: AsyncIterable<SnapshotCharacter>,
+  results: Iterable<SnapshotCharacter>,
+): AsyncGenerator<SnapshotCharacter> {
+  const patch = indexResults(results);
+  for await (const line of state) {
+    yield patch.get(identityKey(line)) ?? line;
+  }
+}
+
+/**
+ * The still-uncollected characters (`pending` or `retryable`) of a streamed
+ * state, each tagged with its line ordinal. Payload-free and small: this is
+ * what the coordinator/worker filter to decide what is left to fetch. Ordinals
+ * count every line, so they line up with the file's order and feed `assignedTo`.
+ */
+export async function pendingIdentities(
+  state: AsyncIterable<SnapshotCharacter>,
+): Promise<PendingIdentity[]> {
+  const pending: PendingIdentity[] = [];
+  let ordinal = 0;
+  for await (const c of state) {
+    if (c.outcome === 'pending' || c.outcome === 'retryable') {
+      pending.push({
+        ordinal,
+        rank: c.rank,
+        account: c.account,
+        character: c.character,
+        class: c.class,
+        level: c.level,
+        outcome: c.outcome,
+        attempts: c.attempts,
+      });
+    }
+    ordinal += 1;
+  }
+  return pending;
+}
+
+/**
+ * The pending ordinals a worker slot owns this run: the ordinals where
+ * `ordinal % workerCount === workerIndex`. Keyed on the state file's line
+ * ordinal (not the position in the pending list) so ownership is STABLE — it
+ * never depends on when a worker streamed the file — and disjoint across slots
+ * by construction: two workers can never own the same ordinal, and every
+ * pending ordinal is owned by exactly one worker — the same disjoint,
+ * lock-free ownership the retired chunk model gave chunk indices.
+ */
+export function assignedTo(
+  pendingOrdinals: readonly number[],
+  workerIndex: number,
+  workerCount: number,
+): number[] {
+  return pendingOrdinals.filter((ordinal) => ordinal % workerCount === workerIndex);
+}

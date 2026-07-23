@@ -5,8 +5,8 @@
  *
  * `load` validates the schema version and required shape: a checkpoint from an
  * older/foreign shape is treated as *no checkpoint* (the caller starts a fresh
- * snapshot) rather than trusted, which would otherwise produce e.g. an
- * `undefined` shard index that silently overwrites shards.
+ * snapshot) rather than trusted, which would otherwise let a v3 manifest's
+ * chunk-shaped bookkeeping drive the v4 state-file pipeline.
  */
 import type { SnapshotManifest } from '@classolek/shared';
 import { STATE_PREFIX, SCHEMA_VERSION, checkpointPath, classifyKey } from '@classolek/shared';
@@ -35,6 +35,33 @@ export class CheckpointStore {
       return undefined;
     }
     return parsed;
+  }
+
+  /**
+   * Peek the raw current.json WITHOUT schema validation. `load` treats a
+   * foreign-schema manifest as absent (the safe default for readers), but the
+   * create fire's v3→v4 migration must still SEE such a manifest to discard its
+   * artifacts before reseeding — so it reads the id/schema/phase through here.
+   * Returns just those three fields of whatever manifest-shaped object is
+   * stored, or undefined when there is none, it is unparseable, or it lacks a
+   * snapshotId/phase. It is never a trusted `SnapshotManifest`: callers use it
+   * only to identify a stale snapshot to clean up, never to resume one.
+   */
+  async peek(
+    league: string,
+  ): Promise<{ snapshotId: string; schemaVersion: unknown; phase: string } | undefined> {
+    const bytes = await this.store.get(checkpointPath(league));
+    if (!bytes) return undefined;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(new TextDecoder().decode(bytes));
+    } catch {
+      return undefined;
+    }
+    if (typeof parsed !== 'object' || parsed === null) return undefined;
+    const m = parsed as Record<string, unknown>;
+    if (typeof m['snapshotId'] !== 'string' || typeof m['phase'] !== 'string') return undefined;
+    return { snapshotId: m['snapshotId'], schemaVersion: m['schemaVersion'], phase: m['phase'] };
   }
 
   /**
@@ -71,10 +98,7 @@ function isValidManifest(value: unknown): value is SnapshotManifest {
     typeof m['league'] === 'string' &&
     typeof m['phase'] === 'string' &&
     typeof m['ladderCapturedAt'] === 'string' &&
-    typeof m['chunkSize'] === 'number' &&
-    typeof m['chunkCount'] === 'number' &&
     typeof m['totalCharacters'] === 'number' &&
-    typeof m['resolvedChunks'] === 'number' &&
     typeof m['outcomes'] === 'object' &&
     m['outcomes'] !== null
   );

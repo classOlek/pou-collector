@@ -21,8 +21,6 @@ export interface RunConfig {
   maxAgeHours: number;
   /** Retryable attempts before a character is declared dead. */
   maxAttempts: number;
-  /** Characters per snapshot chunk (the unit of worker distribution). */
-  chunkSize: number;
   /** Parallel worker jobs the workflow fans out per run. */
   workerCount: number;
   /**
@@ -30,7 +28,7 @@ export interface RunConfig {
    * run in one fire (any clean stop — assignment drained, budget spent,
    * rate-limit stall), the remaining workers checkpoint and stop (stop reason
    * `quorum_stopped`) instead of letting one straggler drag the fire — and
-   * finalize — out. 0 disables (the default). Their leftover chunks stay
+   * finalize — out. 0 disables (the default). Their leftover characters stay
    * pending and resume under the same worker slot on the next cron fire.
    * Only meaningful when < workerCount.
    */
@@ -48,6 +46,13 @@ export interface RunConfig {
   collectCooldownMinutes: number;
   /** Cooldown after an abort before a fresh snapshot is attempted. */
   abortCooldownHours: number;
+  /**
+   * How often (in resolved characters) a worker overwrites its transient result
+   * object — the v4 crash-loss bound (a runner dying mid-run forfeits at most
+   * this many fetches). Worker-only; the coordinator/finalize ignore it. Unset
+   * falls back to the worker's built-in default.
+   */
+  resultCheckpointEvery?: number;
   /**
    * How long a shared per-IP pace file (state/<league>/ips/<ip>.json) survives
    * after its last write before finalize's sweep reaps it. Must exceed GGG's

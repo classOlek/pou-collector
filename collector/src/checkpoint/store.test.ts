@@ -32,10 +32,10 @@ describe('CheckpointStore', () => {
   it('overwrites the previous checkpoint on save (single writer)', async () => {
     const store = new CheckpointStore(new MemoryObjectStore());
     await store.save(manifest());
-    await store.save(manifest({ phase: 'transforming', resolvedChunks: 5 }));
+    await store.save(manifest({ phase: 'transforming', totalCharacters: 42 }));
     const loaded = await store.load('Settlers of Kalguur');
     expect(loaded?.phase).toBe('transforming');
-    expect(loaded?.resolvedChunks).toBe(5);
+    expect(loaded?.totalCharacters).toBe(42);
   });
 
   it('clears a checkpoint', async () => {
@@ -48,8 +48,8 @@ describe('CheckpointStore', () => {
   it('treats a foreign/older-schema checkpoint as no checkpoint (never trusts the shape)', async () => {
     const objects = new MemoryObjectStore();
     const store = new CheckpointStore(objects);
-    // Missing chunk fields + wrong schemaVersion — trusting it would produce
-    // an `undefined` chunk count that silently skips the whole queue.
+    // Missing required fields + wrong schemaVersion — trusting it would let a
+    // foreign-shaped manifest drive the v4 pipeline.
     await seedRaw(objects, 'Legacy', JSON.stringify({ schemaVersion: 0, league: 'Legacy' }));
     expect(await store.load('Legacy')).toBeUndefined();
   });
