@@ -8,7 +8,10 @@ import {
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
+  snapshotStatePath,
   treeCachePath,
+  workerResultPath,
+  workerResultPrefix,
 } from '@classolek/shared';
 import { MemoryObjectStore, getJson, putJson } from '../checkpoint/object-store.js';
 import { CheckpointStore } from '../checkpoint/store.js';
@@ -191,6 +194,69 @@ describe('runRetention raw sweep', () => {
     expect(summary.bytesFreed).toBe(250);
     expect(store.keys()).toContain(chunkPath('Live', 'current', 0));
     expect(store.keys()).not.toContain(chunkPath('Live', 'stale', 0));
+  });
+});
+
+describe('runRetention v4 state/result sweep', () => {
+  it('sweeps an orphaned state file + result files, keeping the in-flight snapshot', async () => {
+    const store = new MemoryObjectStore();
+    const cs = new CheckpointStore(store);
+    await cs.save(inflightManifest('Live', 'current'));
+    // In-flight snapshot's state file + result files: the ONLY copy of live
+    // collected data — must NEVER be swept.
+    await store.put(snapshotStatePath('Live', 'current'), bytes(600));
+    await store.put(workerResultPath('Live', 'current', 0), bytes(120));
+    // Orphan (no in-flight manifest) state file + result files — garbage.
+    await store.put(snapshotStatePath('Live', 'orphan'), bytes(900));
+    await store.put(workerResultPath('Live', 'orphan', 0), bytes(200));
+    await store.put(workerResultPath('Live', 'orphan', 1), bytes(300));
+
+    const summary = await runRetention(
+      { budgetBytes: 1_000_000, keepRecentDetail: 5 },
+      makeDeps(store),
+    );
+
+    // Orphan is reported once per swept group (state-file group + result prefix).
+    expect(summary.rawSnapshotsSwept.filter((r) => r === 'Live/orphan')).toEqual([
+      'Live/orphan',
+      'Live/orphan',
+    ]);
+    expect(summary.bytesFreed).toBe(900 + 200 + 300);
+    expect(store.keys()).not.toContain(snapshotStatePath('Live', 'orphan'));
+    expect(store.keys().some((k) => k.startsWith(workerResultPrefix('Live', 'orphan')))).toBe(
+      false,
+    );
+    // In-flight state + results untouched.
+    expect(store.keys()).toContain(snapshotStatePath('Live', 'current'));
+    expect(store.keys()).toContain(workerResultPath('Live', 'current', 0));
+  });
+
+  it('sweeps state + results of a published snapshot (the transform publish→delete crash leak)', async () => {
+    const store = new MemoryObjectStore();
+    const cs = new CheckpointStore(store);
+    // Manifest already `published` → not in-flight → its stranded state/results
+    // are garbage retention owns (the crash-in-publish→delete-window leak).
+    await cs.save(
+      fixtureManifest({
+        snapshotId: 'done',
+        league: 'Live',
+        depth: 100,
+        phase: 'published',
+        ladderCapturedAt: '2026-07-18T00:00:00.000Z',
+      }),
+    );
+    await store.put(snapshotStatePath('Live', 'done'), bytes(700));
+    await store.put(workerResultPath('Live', 'done', 0), bytes(50));
+
+    const summary = await runRetention(
+      { budgetBytes: 1_000_000, keepRecentDetail: 5 },
+      makeDeps(store),
+    );
+
+    expect(summary.rawSnapshotsSwept).toContain('Live/done');
+    expect(summary.bytesFreed).toBe(750);
+    expect(store.keys()).not.toContain(snapshotStatePath('Live', 'done'));
+    expect(store.keys().some((k) => k.startsWith(workerResultPrefix('Live', 'done')))).toBe(false);
   });
 });
 

@@ -30,8 +30,9 @@
  * file is kept and nothing is published (the caller exits nonzero). Any thrown
  * error before the final delete leaves the state file intact by construction, so
  * a truncated gz or an invalid JSON line can never destroy the only copy of the
- * data. (A crash in the publish→delete window leaks the state file, but
- * retention owns orphaned state and sweeps it.)
+ * data. (A crash in the publish→delete window leaks the state file + result
+ * files, but by then the manifest is already `published` — no longer in-flight —
+ * so retention's orphan sweep owns them and reaps them next run.)
  *
  * Memory at 15k depth: the state file is streamed (never JSON.parsed whole); the
  * DB is file-backed with a spill dir; the big JSON tables (chars/item_rows) are
