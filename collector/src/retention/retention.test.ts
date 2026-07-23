@@ -4,7 +4,7 @@ import {
   INDEX_PATH,
   SCHEMA_VERSION,
   chunkPath,
-  rawChunkShardPath,
+  rawShardPrefix,
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
@@ -18,6 +18,11 @@ import { fixtureManifest } from '../../test/helpers.js';
 
 function bytes(n: number): Uint8Array {
   return new Uint8Array(n);
+}
+
+/** A legacy raw-shard key under raw/<league>/<id>/ (the retention sweep target). */
+function legacyRawShard(league: string, snapshotId: string, seq = 0): string {
+  return `${rawShardPrefix(league, snapshotId)}shard-${String(seq).padStart(3, '0')}.ndjson.gz`;
 }
 
 function makeDeps(store: MemoryObjectStore): RetentionDeps {
@@ -155,9 +160,9 @@ describe('runRetention raw sweep', () => {
     const store = new MemoryObjectStore();
     const cs = new CheckpointStore(store);
     await cs.save(inflightManifest('Live', 'current'));
-    await store.put(rawChunkShardPath('Live', 'current', 0, 0), bytes(500));
-    await store.put(rawChunkShardPath('Live', 'orphan', 0, 0), bytes(700));
-    await store.put(rawChunkShardPath('Live', 'orphan', 1, 0), bytes(300));
+    await store.put(legacyRawShard('Live', 'current', 0), bytes(500));
+    await store.put(legacyRawShard('Live', 'orphan', 0), bytes(700));
+    await store.put(legacyRawShard('Live', 'orphan', 1), bytes(300));
 
     const summary = await runRetention(
       { budgetBytes: 1_000_000, keepRecentDetail: 5 },
@@ -195,7 +200,7 @@ describe('runRetention usage accounting', () => {
     const cs = new CheckpointStore(store);
     await seedSnapshot(store, 'Std', 's-1', '2026-07-01T00:00:00.000Z', 500);
     await cs.save(inflightManifest('Std', 's-live'));
-    await store.put(rawChunkShardPath('Std', 's-live', 0, 0), bytes(300));
+    await store.put(legacyRawShard('Std', 's-live', 0), bytes(300));
     await store.put(treeCachePath('3.25'), bytes(64));
     await store.put(INDEX_PATH, bytes(15));
 

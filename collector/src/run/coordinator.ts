@@ -19,8 +19,8 @@
  *              makes that bound explicit and keeps back-to-back dispatches
  *              from multiplying it. 0 disables.
  *
- * Creating and closing snapshots — chunk seeding and marking leftovers skipped
- * lives in the new-snapshot workflow (run/create-snapshot.ts), and ladder
+ * Creating and closing snapshots — seeding the state file and marking leftovers
+ * skipped lives in the new-snapshot workflow (run/create-snapshot.ts), and ladder
  * capture + roster merge in the build-roster workflow (run/build-roster.ts).
  * This step never talks to GGG and never writes
  * anything; the rollup in the manifest is finalize's last word on what is
@@ -68,7 +68,6 @@ export interface CoordinatorSummary {
   /** Worker slot indices for the workflow matrix ([] when hasWork is false). */
   workers: number[];
   totalCharacters: number;
-  chunkCount: number;
   /** Characters still awaiting computation per the manifest rollup. */
   pendingCount: number;
   /** Epoch ms when a closed gate reopens (penalty end / cooldown end); only
@@ -168,7 +167,6 @@ export class Coordinator {
       hasWork,
       workers: hasWork ? Array.from({ length: this.config.workerCount }, (_, i) => i) : [],
       totalCharacters: manifest?.totalCharacters ?? 0,
-      chunkCount: manifest?.chunkCount ?? 0,
       pendingCount,
     };
   }

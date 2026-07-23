@@ -158,7 +158,9 @@ describe('Finalizer rollup and incremental publish', () => {
     const meta = await getJson<SnapshotMeta>(h.objectStore, snapshotMetaPath(LEAGUE, 'snap-fixed'));
     expect(meta?.complete).toBe(true);
     expect(meta?.pendingCount).toBe(0);
-    // Raw and chunk files are spent state — gone after the final publish.
+    // The state file (the v4 raw) is gone after the final publish; no legacy
+    // raw/chunk objects are ever written now.
+    expect(h.objectStore.keys()).not.toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
     expect(h.objectStore.keys().some((k) => k.startsWith('raw/'))).toBe(false);
     expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(false);
   });
@@ -194,7 +196,9 @@ describe('Finalizer rollup and incremental publish', () => {
 
     expect(summary.stopReason).toBe('aborted');
     expect(summary.phase).toBe('aborted');
-    // The zombie snapshot is fully discarded: raw, chunks, published files, index.
+    // The zombie snapshot is fully discarded: state file, results, published
+    // files, index (plus any legacy raw/chunks).
+    expect(h.objectStore.keys()).not.toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
     expect(h.objectStore.keys().some((k) => k.startsWith('raw/'))).toBe(false);
     expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(false);
     expect(h.objectStore.keys().some((k) => k.startsWith('snapshots/'))).toBe(false);
@@ -217,7 +221,7 @@ describe('Finalizer per-IP pace-file sweep', () => {
       entries: buildLadder(10),
       config: { chunkSize: 5, workerCount: 1 },
     });
-    await h.createFire(); // seeds the manifest, chunks and a coordinator slot file
+    await h.createFire(); // seeds the manifest, state file and a coordinator slot file
     const pace = new PaceStateStore(h.objectStore);
 
     const fresh = new Date(h.clock.now()).toISOString();
@@ -232,8 +236,9 @@ describe('Finalizer per-IP pace-file sweep', () => {
     expect(await pace.load(LEAGUE, '203.0.113.7')).toEqual([1]); // fresh kept
     expect(h.objectStore.keys()).not.toContain(ipPacePath(LEAGUE, '198.51.100.9')); // stale gone
     expect(h.objectStore.keys()).not.toContain(ipPacePath(LEAGUE, '10.0.0.1')); // corrupt gone
-    // Unrelated state is untouched: chunk files and the coordinator slot file.
-    expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(true);
+    // Unrelated state is untouched: the snapshot state file and the coordinator
+    // slot file both survive the pace sweep.
+    expect(h.objectStore.keys()).toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
     expect(h.objectStore.keys()).toContain(workerStatePath(LEAGUE, 'coordinator'));
   });
 

@@ -2,10 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   INDEX_PATH,
   checkpointPath,
-  rawChunkShardPath,
   snapshotAggPath,
   snapshotDetailPath,
   snapshotMetaPath,
+  snapshotStatePath,
 } from '@classolek/shared';
 import { contentTypeForKey, isTransientS3Error, retryTransient } from './s3-store.js';
 
@@ -23,11 +23,11 @@ describe('contentTypeForKey', () => {
     }
   });
 
-  it('types detail Parquet and gzipped raw shards distinctly', () => {
+  it('types detail Parquet and the gzipped state file distinctly', () => {
     expect(contentTypeForKey(snapshotDetailPath('L', 's-1', 'characters'))).toBe(
       'application/vnd.apache.parquet',
     );
-    expect(contentTypeForKey(rawChunkShardPath('L', 's-1', 3, 0))).toBe('application/gzip');
+    expect(contentTypeForKey(snapshotStatePath('L', 's-1'))).toBe('application/gzip');
   });
 
   it('falls back to octet-stream for unknown keys', () => {

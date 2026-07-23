@@ -1,22 +1,20 @@
 /**
  * SnapshotCreator: the new-snapshot workflow's idle-gated seed pass.
- * Request-free — it seeds the queue from the roster the build-roster step
- * maintains (chunk seeding). Unforced fires no-op while a snapshot is live;
- * only a FORCED fire closes the previous snapshot via `skipped` marking.
- * Ladder capture / roster merge live in build-roster.test.ts.
+ * Request-free — it seeds the state file from the roster the build-roster step
+ * maintains (every character `pending`). Unforced fires no-op while a snapshot
+ * is live; only a FORCED fire closes the previous snapshot via `skipped`
+ * marking. Ladder capture / roster merge live in build-roster.test.ts.
  */
 import { describe, expect, it } from 'vitest';
-import type { SnapshotChunk, SnapshotCharacter, SnapshotMeta } from '@classolek/shared';
+import type { SnapshotCharacter, SnapshotMeta } from '@classolek/shared';
 import {
   chunkPath,
-  isChunkResolved,
   snapshotMetaPath,
   snapshotStatePath,
   workerResultPath,
 } from '@classolek/shared';
 import { getJson, putJson } from '../checkpoint/object-store.js';
 import { liveSnapshots } from './create-snapshot.js';
-import { ChunkStore } from '../chunks/chunk-store.js';
 import { readState } from '../snapshot-state/state-store.js';
 import { HOUR_MS } from './config.js';
 import { LEAGUE, entry, makeRunHarness } from '../../test/run-harness.js';
@@ -37,10 +35,10 @@ const okLadder = (n: number) =>
   Array.from({ length: n }, (_, i) => entry(String(i), { kind: 'ok' }));
 
 describe('SnapshotCreator: seeding the queue from the roster', () => {
-  it('seeds a fresh snapshot from the whole roster as pending chunks', async () => {
+  it('seeds a fresh snapshot from the whole roster as pending state-file lines', async () => {
     const h = makeRunHarness({
       entries: buildLadder(23),
-      config: { chunkSize: 5, workerCount: 3 },
+      config: { workerCount: 3 },
     });
 
     // createFire builds the roster, then seeds the new snapshot from it.
@@ -49,14 +47,12 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
     expect(summary.stopReason).toBe('created');
     expect(summary.closed).toBeUndefined();
     expect(summary.totalCharacters).toBe(23);
-    expect(summary.chunkCount).toBe(5); // ceil(23 / 5)
     expect(summary.rosterSize).toBe(23);
 
     // Every character entered the snapshot as `pending` (not computed).
-    const chunks = await new ChunkStore(h.objectStore).loadAll(LEAGUE, 'snap-fixed', 5);
-    expect(chunks.flatMap((c) => c.characters)).toHaveLength(23);
-    expect(chunks.every((c) => c.characters.every((q) => q.outcome === 'pending'))).toBe(true);
-    expect(chunks.every((c) => !isChunkResolved(c) && c.shardsWritten === 0)).toBe(true);
+    const state = await readAllState(h, 'snap-fixed');
+    expect(state).toHaveLength(23);
+    expect(state.every((c) => c.outcome === 'pending')).toBe(true);
 
     // The manifest rollup starts all-pending; the collect coordinate fans out.
     const manifest = await h.checkpointStore.load(LEAGUE);
@@ -70,7 +66,7 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
   it('seeds the single NDJSON.gz state file with every character pending in roster order', async () => {
     const h = makeRunHarness({
       entries: buildLadder(23),
-      config: { chunkSize: 5, workerCount: 3 },
+      config: { workerCount: 3 },
     });
 
     await h.createFire();
@@ -83,15 +79,13 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
     expect(raw?.[1]).toBe(0x8b);
 
     // …one line per character, every one pending with zero attempts and NO raw
-    // payloads, in the same roster order the chunks were seeded in.
+    // payloads, in roster order (rank ascending — line 0 is the top).
     const state = await readAllState(h, 'snap-fixed');
     expect(state).toHaveLength(23);
     expect(state.every((c) => c.outcome === 'pending' && c.attempts === 0)).toBe(true);
     expect(state.every((c) => !('characterData' in c) && !('passiveTree' in c))).toBe(true);
-    const chunks = await new ChunkStore(h.objectStore).loadAll(LEAGUE, 'snap-fixed', 5);
-    expect(state.map((c) => c.account)).toEqual(
-      chunks.flatMap((c) => c.characters).map((q) => q.account),
-    );
+    const ranks = state.map((c) => c.rank);
+    expect(ranks).toEqual([...ranks].sort((a, b) => a - b));
   });
 
   it('skips cleanly when the roster is empty (build-roster has not run yet)', async () => {
@@ -102,17 +96,15 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
 
     expect(summary.stopReason).toBe('empty_roster');
     expect(summary.totalCharacters).toBe(0);
-    expect(summary.chunkCount).toBe(0);
-    // No snapshot manifest, no chunks and no state file were written.
+    // No snapshot manifest and no state file were written.
     expect(await h.checkpointStore.load(LEAGUE)).toBeUndefined();
-    expect(h.objectStore.keys().some((k) => k.includes('/chunks/'))).toBe(false);
     expect(h.objectStore.keys().some((k) => k.includes('/snapshots/'))).toBe(false);
   });
 
   it('seeds the whole current roster, including characters no longer on the ladder', async () => {
     // Build 1: 10 characters. Roll the ladder and build again: the roster grows
     // to 15, and the new snapshot seeds all of them.
-    const h = makeRunHarness({ entries: buildLadder(10), config: { chunkSize: 4 } });
+    const h = makeRunHarness({ entries: buildLadder(10) });
     await h.buildFire();
     const rolled = [
       ...Array.from({ length: 5 }, (_, i) => entry(`new-${i}`, { kind: 'ok' })),
@@ -124,9 +116,9 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
 
     expect(summary.stopReason).toBe('created');
     expect(summary.totalCharacters).toBe(15);
-    expect(summary.chunkCount).toBe(4); // ceil(15 / 4)
-    const chunk = await getJson<SnapshotChunk>(h.objectStore, chunkPath(LEAGUE, 'snap-fixed', 0));
-    expect(chunk?.characters.every((q) => q.outcome === 'pending')).toBe(true);
+    const state = await readAllState(h, 'snap-fixed');
+    expect(state).toHaveLength(15);
+    expect(state.every((c) => c.outcome === 'pending')).toBe(true);
   });
 
   it('creates immediately once the previous snapshot has published (back-to-back)', async () => {
@@ -149,7 +141,7 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
   });
 
   it('no-ops while a snapshot is live, leaving its queue untouched', async () => {
-    const h = makeRunHarness({ entries: buildLadder(6), config: { chunkSize: 3 } });
+    const h = makeRunHarness({ entries: buildLadder(6) });
     await h.createFire(); // snap-fixed is now collecting
 
     // Fires while the snapshot is live never close it — hours later included.
@@ -162,8 +154,7 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
     expect(manifest?.snapshotId).toBe('snap-fixed');
     expect(manifest?.phase).toBe('collecting');
     // Every queued character is still pending — nothing was marked skipped.
-    const chunk = await getJson<SnapshotChunk>(h.objectStore, chunkPath(LEAGUE, 'snap-fixed', 0));
-    expect(chunk?.characters.every((q) => q.outcome === 'pending')).toBe(true);
+    expect((await readAllState(h, 'snap-fixed')).every((c) => c.outcome === 'pending')).toBe(true);
   });
 
   it('honors the abort cooldown before retrying an aborted snapshot', async () => {
@@ -191,10 +182,11 @@ describe('SnapshotCreator: seeding the queue from the roster', () => {
 describe('SnapshotCreator: closing the previous snapshot (forced fires only)', () => {
   it('a forced fire marks uncollected characters skipped and publishes the closed snapshot', async () => {
     const entries = okLadder(10);
-    const h = makeRunHarness({ entries, config: { chunkSize: 5, workerCount: 2 } });
-    await h.createFire(); // snap-fixed: chunk 0 → w0, chunk 1 → w1
+    const h = makeRunHarness({ entries, config: { workerCount: 2 } });
+    await h.createFire(); // snap-fixed seeded, 10 pending state-file lines
 
-    // Only worker 0 runs: chunk 0 (5 chars) resolves, chunk 1 stays pending.
+    // Only worker 0 runs: it owns the even state ordinals (5 of 10 characters),
+    // resolving them; the other 5 stay pending for the close to mark skipped.
     await h.newWorker(0).runOnce();
     await h.newFinalizer().runOnce(); // rollup + incremental publish
 
@@ -216,21 +208,19 @@ describe('SnapshotCreator: closing the previous snapshot (forced fires only)', (
     expect(meta?.coverage.ok).toBe(5);
     expect(meta?.totalCharacters).toBe(10);
 
-    // Its chunk queue is spent; the NEW snapshot's chunks exist and are pending.
-    expect(h.objectStore.keys().some((k) => k.includes('/chunks/snap-fixed/'))).toBe(false);
-    const chunk = await getJson<SnapshotChunk>(h.objectStore, chunkPath(LEAGUE, 'snap-2', 0));
-    expect(chunk?.characters.every((q) => q.outcome === 'pending')).toBe(true);
     const manifest = await h.checkpointStore.load(LEAGUE);
     expect(manifest?.snapshotId).toBe('snap-2');
     expect(manifest?.phase).toBe('collecting');
     expect(manifest?.totalCharacters).toBe(10);
 
     // The closed snapshot published immutably, so its state file (the v4 raw)
-    // was deleted along with the chunk queue. The honest skip accounting lives
-    // in the published meta (checked above: 5 collected `ok`, 5 marked skipped).
+    // was deleted. The honest skip accounting lives in the published meta
+    // (checked above: 5 collected `ok`, 5 marked skipped).
     expect(h.objectStore.keys()).not.toContain(snapshotStatePath(LEAGUE, 'snap-fixed'));
     // The fresh snapshot's state file is seeded all-pending.
-    expect((await readAllState(h, 'snap-2')).every((c) => c.outcome === 'pending')).toBe(true);
+    const fresh = await readAllState(h, 'snap-2');
+    expect(fresh).toHaveLength(10);
+    expect(fresh.every((c) => c.outcome === 'pending')).toBe(true);
   });
 
   it('a forced fire closes a snapshot with zero collected characters as a clean abort, then creates', async () => {

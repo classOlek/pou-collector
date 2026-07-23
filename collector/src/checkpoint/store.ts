@@ -5,8 +5,8 @@
  *
  * `load` validates the schema version and required shape: a checkpoint from an
  * older/foreign shape is treated as *no checkpoint* (the caller starts a fresh
- * snapshot) rather than trusted, which would otherwise produce e.g. an
- * `undefined` shard index that silently overwrites shards.
+ * snapshot) rather than trusted, which would otherwise let a v3 manifest's
+ * chunk-shaped bookkeeping drive the v4 state-file pipeline.
  */
 import type { SnapshotManifest } from '@classolek/shared';
 import { STATE_PREFIX, SCHEMA_VERSION, checkpointPath, classifyKey } from '@classolek/shared';
@@ -98,10 +98,7 @@ function isValidManifest(value: unknown): value is SnapshotManifest {
     typeof m['league'] === 'string' &&
     typeof m['phase'] === 'string' &&
     typeof m['ladderCapturedAt'] === 'string' &&
-    typeof m['chunkSize'] === 'number' &&
-    typeof m['chunkCount'] === 'number' &&
     typeof m['totalCharacters'] === 'number' &&
-    typeof m['resolvedChunks'] === 'number' &&
     typeof m['outcomes'] === 'object' &&
     m['outcomes'] !== null
   );

@@ -21,7 +21,12 @@ export interface RunConfig {
   maxAgeHours: number;
   /** Retryable attempts before a character is declared dead. */
   maxAttempts: number;
-  /** Characters per snapshot chunk (the unit of worker distribution). */
+  /**
+   * LEGACY — sized the retired chunk files (the v4 state file has no chunks).
+   * Kept as an accepted config key so a still-set collector.json / Actions
+   * variable doesn't fail validation during the v4 rollout; nothing reads it
+   * anymore. Phase 7 drops it from RunConfig + config-file + collector.json.
+   */
   chunkSize: number;
   /** Parallel worker jobs the workflow fans out per run. */
   workerCount: number;
@@ -30,7 +35,7 @@ export interface RunConfig {
    * run in one fire (any clean stop — assignment drained, budget spent,
    * rate-limit stall), the remaining workers checkpoint and stop (stop reason
    * `quorum_stopped`) instead of letting one straggler drag the fire — and
-   * finalize — out. 0 disables (the default). Their leftover chunks stay
+   * finalize — out. 0 disables (the default). Their leftover characters stay
    * pending and resume under the same worker slot on the next cron fire.
    * Only meaningful when < workerCount.
    */

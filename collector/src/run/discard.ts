@@ -26,7 +26,8 @@ export async function discardSnapshotArtifacts(
   for (const prefix of [
     // v4 private state: the transient per-worker result files…
     workerResultPrefix(league, snapshotId),
-    // …and (until the sweep in Phase 6) the legacy raw shards + chunk files.
+    // …and any legacy raw shards + chunk files a pre-v4 snapshot left behind
+    // (kept for the one-release migration sweep; a v4 snapshot writes neither).
     rawShardPrefix(league, snapshotId),
     chunkPrefix(league, snapshotId),
     // Any incomplete published files (aborts can happen mid-incremental-publish).

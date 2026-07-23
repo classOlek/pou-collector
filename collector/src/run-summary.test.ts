@@ -42,7 +42,6 @@ const coordinateSummary: CoordinatorSummary = {
   hasWork: true,
   workers: [0, 1, 2, 3],
   totalCharacters: 15720,
-  chunkCount: 315,
   pendingCount: 12000,
 };
 
@@ -64,7 +63,6 @@ const createSummary: CreateSummary = {
   },
   rosterSize: 15720,
   totalCharacters: 15720,
-  chunkCount: 315,
 };
 
 const workerSummary: WorkerSummary = {
@@ -81,8 +79,6 @@ const finalizeSummary: FinalizeSummary = {
   phase: 'collecting',
   stopReason: 'published_partial',
   outcomes: { pending: 12000, ok: 3600, private: 100, dead: 20, retryable: 0, skipped: 0 },
-  resolvedChunks: 74,
-  chunkCount: 315,
   transform: {
     snapshotId: 'snap-1',
     league: 'Standard',

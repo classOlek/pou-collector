@@ -8,7 +8,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { SnapshotCharacter, SnapshotManifest } from '@classolek/shared';
-import { SCHEMA_VERSION, chunkCountFor, emptyTally } from '@classolek/shared';
+import { SCHEMA_VERSION, emptyTally } from '@classolek/shared';
 import type { PassiveTree, TreeOrigin } from '../src/transform/tree-source.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -168,8 +168,6 @@ export function transformingManifest(
     pending: extraOutcomes.pending ?? 0,
   };
   const total = outcomes.ok + outcomes.private + outcomes.dead + outcomes.pending;
-  const chunkSize = 50;
-  const chunkCount = chunkCountFor(total, chunkSize);
   const drained = outcomes.pending === 0;
 
   return {
@@ -180,10 +178,7 @@ export function transformingManifest(
     phase: drained ? 'transforming' : 'collecting',
     ladderCapturedAt: '2026-07-16T22:00:00.000Z',
     ...(drained ? { completedAt: '2026-07-17T00:30:00.000Z' } : {}),
-    chunkSize,
-    chunkCount,
     totalCharacters: total,
     outcomes,
-    resolvedChunks: drained ? chunkCount : 0,
   };
 }

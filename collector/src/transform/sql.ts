@@ -1,7 +1,8 @@
 /**
  * DuckDB SQL for the transform (decision #3: SQL does the heavy lifting).
  *
- * The raw shard record is one JSON object per line:
+ * The input is one JSON object per line — the `ok` state-file lines transform.ts
+ * streams back into the raw get-items / get-passive shape:
  *   { rank, account, character, class, level, fetchedAt,
  *     items:    <get-items response    { character, items[] }>,
  *     passives: <get-passive-skills    { hashes[] }> }
@@ -12,14 +13,15 @@
  * shared by the items / item_mods / skills tables, then dropped — see transform.ts
  * for the file-backed DB, table drops, and streaming used to bound peak memory.
  *
- * Dedup (Phase 3 edge case): a crash between a shard flush and a checkpoint can
- * leave a stale orphan shard, and a re-collected character can appear in more
- * than one shard. `chars` keeps one row per (account, character), the latest by
- * fetchedAt, so every downstream table is deduped by construction.
+ * Dedup (defensive): the v4 state file holds exactly one line per (account,
+ * character), so a cross-input duplicate can no longer arise the way an orphan
+ * chunk shard once could. `chars` still keeps one row per (account, character),
+ * the latest by fetchedAt, as a belt-and-suspenders guard that costs nothing
+ * when the input is already unique.
  */
 import type { AggregateKind } from '@classolek/shared';
 
-/** Column spec for read_json over the raw shard NDJSON. */
+/** Column spec for read_json over the streamed state-file NDJSON. */
 const RAW_COLUMNS =
   "columns={rank:'INTEGER',account:'VARCHAR','character':'VARCHAR'," +
   "class:'VARCHAR',level:'INTEGER',fetchedAt:'VARCHAR',items:'JSON',passives:'JSON'}, " +
@@ -39,13 +41,13 @@ function fileListLiteral(paths: string[]): string {
 }
 
 /**
- * Deduped source table, one row per character (latest fetchedAt wins). With zero
- * shards, read_json([]) is a DuckDB binder error, so emit a typed empty table
- * instead — the validation gate then blocks publish cleanly.
+ * Deduped source table, one row per character (latest fetchedAt wins). With no
+ * input file, read_json([]) is a DuckDB binder error, so emit a typed empty
+ * table instead — the validation gate then blocks publish cleanly.
  */
-export function createCharsSql(shardFiles: string[]): string {
-  if (shardFiles.length === 0) return CHARS_EMPTY;
-  const files = fileListLiteral(shardFiles);
+export function createCharsSql(inputFiles: string[]): string {
+  if (inputFiles.length === 0) return CHARS_EMPTY;
+  const files = fileListLiteral(inputFiles);
   return `CREATE TABLE chars AS
     WITH raw AS (
       SELECT * FROM read_json(${files}, ${RAW_COLUMNS})

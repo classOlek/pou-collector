@@ -10,16 +10,16 @@
  *     before the delete re-merges idempotently next fire; a crash before the
  *     manifest write re-merges too — merge is the recovery path, no special
  *     cases;
- *  2. aborts an over-age snapshot (discarding the state file, results, legacy
- *     chunks, any incomplete published files and its index entry);
+ *  2. aborts an over-age snapshot (discarding the state file, results, any
+ *     incomplete published files and its index entry, plus any legacy
+ *     chunks/raw a pre-v4 snapshot left behind — see discardSnapshotArtifacts);
  *  3. while characters remain pending: publishes the data collected SO FAR as an
  *     incomplete snapshot (complete: false) — immediately visible in the web
  *     app, republished in place each run. A partial-publish failure only warns:
  *     collection must keep going regardless;
  *  4. when every character is resolved: hands the snapshot to the final
  *     transform (executeTransform: bounded attempts → published, immutable from
- *     then on), which deletes the state file (the raw) + results; finalize also
- *     sweeps the legacy chunk files (retired in Phase 6).
+ *     then on), which deletes the state file (the raw) + results.
  */
 import type {
   OutcomeTally,
@@ -31,7 +31,6 @@ import { emptyTally, pendingOfTally, workerResultPrefix } from '@classolek/share
 import type { CheckpointStore } from '../checkpoint/store.js';
 import { listKeys, type ObjectStore } from '../checkpoint/object-store.js';
 import { PaceStateStore } from '../rate-limit/pace-store.js';
-import { ChunkStore } from '../chunks/chunk-store.js';
 import {
   mergeResults,
   readState,
@@ -76,20 +75,16 @@ export interface FinalizeSummary {
   phase: SnapshotPhase | 'none';
   stopReason: FinalizeStopReason;
   outcomes: OutcomeTally;
-  resolvedChunks: number;
-  chunkCount: number;
   transform?: TransformSummary;
 }
 
 export class Finalizer {
-  private readonly chunks: ChunkStore;
   private readonly pace: PaceStateStore;
 
   constructor(
     private readonly config: FinalizeConfig,
     private readonly deps: FinalizeDeps,
   ) {
-    this.chunks = new ChunkStore(deps.objectStore);
     this.pace = new PaceStateStore(deps.objectStore);
   }
 
@@ -109,7 +104,7 @@ export class Finalizer {
 
     const manifest = await this.deps.checkpointStore.load(this.config.league);
     if (!manifest) {
-      return { phase: 'none', stopReason: 'idle', ...emptyProgress() };
+      return { phase: 'none', stopReason: 'idle', outcomes: emptyTally() };
     }
     if (manifest.phase === 'transforming') {
       // Parked by a previous run (final transform failed or crashed): the age
@@ -122,8 +117,6 @@ export class Finalizer {
         phase: manifest.phase,
         stopReason: 'idle',
         outcomes: manifest.outcomes,
-        resolvedChunks: manifest.resolvedChunks,
-        chunkCount: manifest.chunkCount,
       };
     }
 
@@ -191,19 +184,18 @@ export class Finalizer {
       this.deps,
     );
     if (outcome.kind === 'published') {
-      // The chunk queue is spent state now — the published snapshot is the record.
-      await this.chunks.deleteAll(manifest.league, manifest.snapshotId);
+      // runTransform already deleted the state file + result files (the raw) on
+      // the final publish — the published snapshot is the record now.
       return {
         phase: 'published',
         stopReason: 'published_final',
         outcomes: manifest.outcomes,
-        resolvedChunks: manifest.resolvedChunks,
-        chunkCount: manifest.chunkCount,
         transform: outcome.summary,
       };
     }
     // executeTransform aborted the snapshot (no chars / attempts exhausted):
-    // finish the discard (chunks + any incomplete published files + index entry).
+    // finish the discard (state file, results, any incomplete published files +
+    // index entry, plus legacy chunks/raw).
     await discardSnapshotArtifacts(
       this.deps.objectStore,
       this.deps.clock,
@@ -214,8 +206,6 @@ export class Finalizer {
       phase: 'aborted',
       stopReason: outcome.reason === 'no_characters' ? 'aborted_no_characters' : 'aborted',
       outcomes: manifest.outcomes,
-      resolvedChunks: manifest.resolvedChunks,
-      chunkCount: manifest.chunkCount,
     };
   }
 
@@ -244,8 +234,6 @@ export class Finalizer {
       phase: 'aborted',
       stopReason,
       outcomes: manifest.outcomes,
-      resolvedChunks: manifest.resolvedChunks,
-      chunkCount: manifest.chunkCount,
     };
   }
 
@@ -348,12 +336,6 @@ export class Finalizer {
       phase: manifest.phase,
       stopReason,
       outcomes: manifest.outcomes,
-      resolvedChunks: manifest.resolvedChunks,
-      chunkCount: manifest.chunkCount,
     };
   }
-}
-
-function emptyProgress(): Pick<FinalizeSummary, 'outcomes' | 'resolvedChunks' | 'chunkCount'> {
-  return { outcomes: emptyTally(), resolvedChunks: 0, chunkCount: 0 };
 }

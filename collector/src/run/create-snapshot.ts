@@ -13,8 +13,8 @@
  *    reseeding.
  *  - CREATE seeds the snapshot queue from the ENTIRE current roster (the
  *    growing character database that build-roster maintains), every character
- *    entering as `pending`, split into worker-sized chunks — this is what lets
- *    snapshots grow past the ladder window over time.
+ *    entering as `pending` in the single NDJSON.gz state file — this is what
+ *    lets snapshots grow past the ladder window over time.
  *
  * This step is REQUEST-FREE: it never reads the GGG ladder. All ladder capture
  * and roster merging lives in build-roster.ts; new-snapshot seeds from whatever
@@ -37,12 +37,11 @@ import type {
   SnapshotManifest,
   SnapshotPhase,
 } from '@classolek/shared';
-import { SCHEMA_VERSION, chunkCountFor, emptyTally, isInFlight } from '@classolek/shared';
+import { SCHEMA_VERSION, emptyTally, isInFlight } from '@classolek/shared';
 import type { Clock } from '../rate-limit/clock.js';
 import type { CheckpointStore } from '../checkpoint/store.js';
 import type { ObjectStore } from '../checkpoint/object-store.js';
 import { RosterStore } from '../roster/roster-store.js';
-import { ChunkStore, planChunks } from '../chunks/chunk-store.js';
 import { writeState } from '../snapshot-state/state-store.js';
 import { HOUR_MS, type RunConfig } from './config.js';
 import type { Finalizer } from './finalize.js';
@@ -80,19 +79,16 @@ export interface CreateSummary {
   closed?: CloseSummary;
   rosterSize: number;
   totalCharacters: number;
-  chunkCount: number;
 }
 
 export class SnapshotCreator {
   private readonly rosters: RosterStore;
-  private readonly chunks: ChunkStore;
 
   constructor(
     private readonly config: RunConfig,
     private readonly deps: CreatorDeps,
   ) {
     this.rosters = new RosterStore(deps.objectStore);
-    this.chunks = new ChunkStore(deps.objectStore);
   }
 
   private log(message: string): void {
@@ -139,7 +135,7 @@ export class SnapshotCreator {
     // (skipped-marking + publish); an unforced fire reaches here only with
     // `ladder_capture` remnants, which close as a discard. A transform failure
     // inside a forced close throws (workflow alerts, phase left `transforming`);
-    // recovery needs no operator: with every chunk resolved the collect
+    // recovery needs no operator: with every character resolved the collect
     // workflow's next finalize retries the transform and publishes.
     let closed: CloseSummary | undefined;
     for (const manifest of inFlight) {
@@ -162,7 +158,6 @@ export class SnapshotCreator {
         stopReason: 'empty_roster',
         rosterSize: 0,
         totalCharacters: 0,
-        chunkCount: 0,
       };
       return closed ? { ...summary, closed } : summary;
     }
@@ -184,17 +179,14 @@ export class SnapshotCreator {
       // The moment this snapshot began; anchors both the age hard-block and the
       // interval guard. (No ladder is captured here — build-roster owns that.)
       ladderCapturedAt: new Date(now).toISOString(),
-      chunkSize: this.config.chunkSize,
-      chunkCount: 0,
       totalCharacters: 0,
       outcomes: emptyTally(),
-      resolvedChunks: 0,
     };
     await this.deps.checkpointStore.save(manifest);
     return manifest;
   }
 
-  /** Seed the whole roster as pending chunks and move the manifest to collecting. */
+  /** Seed the whole roster into the state file and move the manifest to collecting. */
   private async seedFromRoster(
     manifest: SnapshotManifest,
     characters: readonly RosterCharacter[],
@@ -202,7 +194,7 @@ export class SnapshotCreator {
     const total = characters.length;
 
     // The snapshot queue is the ENTIRE roster, every character entering as
-    // `pending`, roster order preserved (line/chunk 0 is the top of the ladder).
+    // `pending`, roster order preserved (line 0 is the top of the ladder).
     //
     // v4: the authoritative queue is the single NDJSON.gz STATE FILE — one line
     // per character, written whole here (the put is atomic on R2). It is written
@@ -210,43 +202,25 @@ export class SnapshotCreator {
     // ladder_capture remnant the next create fire discards (design decision:
     // "state file first, manifest second"). `writeState` overwrites the object,
     // so a partial earlier seed is fully replaced — no pre-delete needed.
-    //
-    // The legacy chunk files are still seeded alongside it: the coordinate/worker
-    // (Phase 4) and finalize (Phase 5) pipeline still reads chunks, so both must
-    // exist through the switch-over. Phase 6 drops the chunk seed and fields.
     await writeState(
       this.deps.objectStore,
       this.config.league,
       manifest.snapshotId,
       seedLines(characters),
     );
-    await this.chunks.deleteAll(this.config.league, manifest.snapshotId);
-    const chunks = planChunks(
-      this.config.league,
-      manifest.snapshotId,
-      characters,
-      this.config.chunkSize,
-    );
-    for (const chunk of chunks) await this.chunks.save(chunk);
 
     const collecting: SnapshotManifest = {
       ...manifest,
       phase: 'collecting',
-      chunkCount: chunkCountFor(total, this.config.chunkSize),
       totalCharacters: total,
       outcomes: { ...emptyTally(), pending: total },
-      resolvedChunks: 0,
     };
     await this.deps.checkpointStore.save(collecting);
-    this.log(
-      `seed: snapshot=${collecting.snapshotId} characters=${total} ` +
-        `chunks=${collecting.chunkCount} (size ${this.config.chunkSize})`,
-    );
+    this.log(`seed: snapshot=${collecting.snapshotId} characters=${total}`);
     return {
       stopReason: 'created',
       rosterSize: total,
       totalCharacters: total,
-      chunkCount: collecting.chunkCount,
     };
   }
 
@@ -255,7 +229,6 @@ export class SnapshotCreator {
       stopReason,
       rosterSize: target?.totalCharacters ?? 0,
       totalCharacters: target?.totalCharacters ?? 0,
-      chunkCount: target?.chunkCount ?? 0,
     };
   }
 

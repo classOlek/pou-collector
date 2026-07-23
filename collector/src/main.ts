@@ -8,9 +8,9 @@
  *                character database). The ONLY step that reads the GGG ladder.
  *   create-snapshot — the new-snapshot workflow (dispatched by build-roster
  *                after each roster build): idle-gated — seed the new snapshot's
- *                pending chunks from the CURRENT roster, but only when no
- *                snapshot is live; otherwise a clean no-op. Request-free — no
- *                ladder capture here.
+ *                state file (every character pending) from the CURRENT roster,
+ *                but only when no snapshot is live; otherwise a clean no-op.
+ *                Request-free — no ladder capture here.
  *                COLLECTOR_RESET_ABORTED=true clears aborted checkpoints first;
  *                COLLECTOR_FORCE_CREATE=true (operator dispatch) closes the
  *                live snapshot (uncollected marked `skipped`, published with
@@ -22,12 +22,13 @@
  *                (`has_work` / `workers` outputs). Resumes an in-flight league
  *                first (a dispatch-created league is never stranded).
  *   work       — one parallel worker (WORKER_INDEX from the job matrix):
- *                resolves the pending chunks that slot owns this run. Exits 0
+ *                resolves the pending characters that slot owns this run. Exits 0
  *                on resumable stops (budget / rate-limit) — the next fire
  *                continues.
- *   finalize   — roll chunk outcomes up, publish the collected-so-far data as
- *                an incomplete snapshot (or the final immutable snapshot once
- *                every chunk resolved), then run retention.
+ *   finalize   — merge the worker result files into the state file, publish the
+ *                collected-so-far data as an incomplete snapshot (or the final
+ *                immutable snapshot once every character resolves), then run
+ *                retention.
  *   retention  — usage accounting, orphaned-raw sweep, trim oldest detail.
  *   economy    — the ECONOMY POE.NINJA workflow (hourly): cache every
  *                documented poe.ninja poe1 economy category into one file per
@@ -250,7 +251,7 @@ async function work(config: CollectorConfig, store: ObjectStore): Promise<number
   const summary = await worker.runOnce();
   emitSummary(renderWorkerSummary(summary, limiter.toMemory()));
   // Workers never fail the workflow for resumable stops: budget and rate-limit
-  // stops are normal, and finalize/next runs pick the remaining chunks up.
+  // stops are normal, and finalize/next runs pick the remaining characters up.
   return 0;
 }
 
