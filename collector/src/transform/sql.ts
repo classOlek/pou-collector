@@ -72,14 +72,25 @@ export function createTreeNodesSql(treeFile: string): string {
 /**
  * The unnested-item rows shared by items / item_mods / skills (built once).
  *
+ * Two GGG payloads carry items and we scan BOTH — nothing is slot-whitelisted or
+ * skipped:
+ *   - `items.items` (get-items): worn gear + flasks.
+ *   - `passives.items` (get-passive-skills): the passive-tree jewels, INCLUDING
+ *     every cluster jewel, each stamped `inventoryId = 'PassiveJewels'`. GGG does
+ *     NOT return tree jewels in get-items, so reading only `items.items` (the pre-
+ *     fix behaviour) dropped all cluster jewels from `items`/`item_mods` even
+ *     though the raw payload had them.
+ *
  * v6: each row also carries a stable per-item `item_id`
- * (`character_key || '#' || <0-based ordinal within the character's items array>`).
- * The ordinal is `generate_subscripts(<items array>, 1)` unnested in lockstep with
- * the item `unnest` — DuckDB zips the two set-returning functions position-for-
- * position over the SAME array, so element k always pairs with subscript k (array
- * order, deterministic; verified against the native binding). Deriving it HERE,
- * before any downstream WHERE, keeps `items` and `item_mods` agreeing on the id
- * even though `items` further filters on a present `inventoryId`.
+ * (`character_key || '#' || <0-based ordinal within that array>` for gear;
+ * `character_key || '#p' || <ordinal>` for the passives-payload jewels). The `#p`
+ * namespace keeps the two sources' ids from ever colliding while staying
+ * deterministic. The ordinal is `generate_subscripts(<items array>, 1)` unnested
+ * in lockstep with the item `unnest` — DuckDB zips the two set-returning functions
+ * position-for-position over the SAME array, so element k always pairs with
+ * subscript k (array order, deterministic; verified against the native binding).
+ * Deriving it HERE, before any downstream WHERE, keeps `items` and `item_mods`
+ * agreeing on the id even though `items` further filters on a present `inventoryId`.
  */
 export function createItemRowsSql(): string {
   return `CREATE TABLE item_rows AS
@@ -87,7 +98,13 @@ export function createItemRowsSql(): string {
       unnest(CAST(items->'$.items' AS JSON[])) AS item,
       character_key || '#' || (generate_subscripts(CAST(items->'$.items' AS JSON[]), 1) - 1) AS item_id
     FROM chars
-    WHERE json_array_length(coalesce(items->'$.items', '[]')) > 0;`;
+    WHERE json_array_length(coalesce(items->'$.items', '[]')) > 0
+    UNION ALL
+    SELECT character_key,
+      unnest(CAST(passives->'$.items' AS JSON[])) AS item,
+      character_key || '#p' || (generate_subscripts(CAST(passives->'$.items' AS JSON[]), 1) - 1) AS item_id
+    FROM chars
+    WHERE json_array_length(coalesce(passives->'$.items', '[]')) > 0;`;
 }
 
 export function createCharactersSql(snapshotId: string): string {

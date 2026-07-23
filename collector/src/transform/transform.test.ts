@@ -444,8 +444,78 @@ describe('runTransform v5 enrichment (cluster jewels, extra fields, raw net)', (
     expect(raw).toHaveLength(1);
     expect(raw[0]?.[0]).toBe('z/Z');
     // Nothing is skipped: fields the normalized tables omit survive verbatim here.
-    expect(String(raw[0]?.[1])).toContain('PassiveJewels');
+    // Worn gear rides the get-items payload; the tree jewel + its subgraph ride
+    // the get-passive-skills payload (where GGG actually returns them).
+    expect(String(raw[0]?.[1])).toContain('BodyArmour');
+    expect(String(raw[0]?.[2])).toContain('PassiveJewels');
     expect(String(raw[0]?.[2])).toContain('jewel_data');
+  });
+
+  // Regression for the dropped-cluster-jewels bug: GGG delivers tree jewels in
+  // the get-passive-skills payload (`passives.items`), never in get-items, so a
+  // transform that scanned only `items.items` produced items.parquet with no
+  // PassiveJewels slot at all. This pins that a jewel arriving via the passives
+  // payload reaches the `items` table, keyed by a `#p`-namespaced item_id whose
+  // mods still attribute through the v6 join.
+  it('surfaces a tree jewel delivered in the passives payload (not get-items)', async () => {
+    const store = new MemoryObjectStore();
+    const spec: CharSpec = {
+      rank: 1,
+      account: 'j',
+      character: 'J',
+      class: 'Necromancer',
+      mainSkill: 'Cyclone',
+      nodes: [123],
+      cluster: {
+        socketHash: 12345,
+        name: 'Vengeance Rock',
+        baseType: 'Large Cluster Jewel',
+        quality: 0,
+        reqLevel: 68,
+        explicitMods: ['Adds 3 Passive Skills'],
+        nodes: [{ hash: 900010, name: 'Blessed', stats: ['x'], isNotable: true }],
+      },
+    };
+    await seedState(store, LEAGUE, SNAP, [spec]);
+    const manifest = transformingManifest(LEAGUE, SNAP, [spec]);
+    const { deps } = makeDeps(store);
+
+    await runTransform(manifest, { treeVersion: '3.25-test', complete: true }, deps);
+
+    // The jewel — carried only in `passives.items` — lands in the items table,
+    // with the passives-payload id namespace (`#p<ordinal>`), never colliding
+    // with gear ids (`#<ordinal>`).
+    const jewel = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'items'),
+      "SELECT slot, base_type, item_id FROM read_parquet($FILE) WHERE slot = 'PassiveJewels'",
+    );
+    expect(jewel).toHaveLength(1);
+    expect(jewel[0]?.[1]).toBe('Large Cluster Jewel');
+    expect(jewel[0]?.[2]).toBe('j/J#p0');
+
+    // Its mod attributes through the v6 per-item join (item_key = item_id).
+    const mods = await queryParquetTables(
+      store,
+      {
+        ITEMS: snapshotDetailPath(LEAGUE, SNAP, 'items'),
+        MODS: snapshotDetailPath(LEAGUE, SNAP, 'item_mods'),
+      },
+      `SELECT m.mod_text
+         FROM read_parquet($ITEMS) i
+         JOIN read_parquet($MODS) m
+           ON m.character_key = i.character_key AND m.item_key = i.item_id
+        WHERE i.slot = 'PassiveJewels'`,
+    );
+    expect(mods.map((r) => r[0])).toEqual(['Adds 3 Passive Skills']);
+
+    // Gear from get-items is unaffected and keeps its own id namespace.
+    const gear = await queryParquet(
+      store,
+      snapshotDetailPath(LEAGUE, SNAP, 'items'),
+      "SELECT item_id FROM read_parquet($FILE) WHERE slot = 'Weapon'",
+    );
+    expect(gear[0]?.[0]).toBe('j/J#1'); // body armour #0, weapon #1
   });
 });
 
